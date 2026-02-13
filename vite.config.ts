@@ -8,6 +8,30 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        proxy: {
+          '/earth-search': {
+            target: 'https://earth-search.aws.element84.com/v1',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/earth-search/, '')
+          },
+          '/titiler': {
+            target: 'https://titiler.xyz',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/titiler/, '')
+          },
+          '/nominatim': {
+            target: 'https://nominatim.openstreetmap.org',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/nominatim/, ''),
+            headers: {
+              'User-Agent': 'land-record-dev/1.0'
+            }
+          },
+          '/api': {
+            target: 'http://127.0.0.1:4000',
+            changeOrigin: true
+          }
+        }
       },
       plugins: [react()],
       define: {

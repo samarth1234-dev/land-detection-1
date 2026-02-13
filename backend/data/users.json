@@ -1,0 +1,20 @@
+[
+  {
+    "id": "8960de82-dca5-4af0-8e41-f2c09c90cf40",
+    "name": "Demo User",
+    "email": "demo.user@example.com",
+    "walletAddress": "0x1234",
+    "passwordHash": "$2b$12$Ydez5aDZRJlInC2zH2liheIU0ox7e8l6knBwqH6/EsyQlH26yGTea",
+    "createdAt": "2026-02-13T19:14:13.501Z",
+    "lastLoginAt": "2026-02-13T19:14:15.089Z"
+  },
+  {
+    "id": "08f5d9f5-3f7c-482e-ad5d-66e3f843ddc8",
+    "name": "Sukrit Pal",
+    "email": "tulipsarc@gmail.com",
+    "walletAddress": null,
+    "passwordHash": "$2b$12$S1jGobiuOaLe/XASEmLZNeDUTJdrtof1GKiSKUBROmemceowi3K.u",
+    "createdAt": "2026-02-13T19:31:37.872Z",
+    "lastLoginAt": null
+  }
+]

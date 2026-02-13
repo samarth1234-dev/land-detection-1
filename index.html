@@ -5,26 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>TerraTrust AI - Land Intelligence</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <script>
       tailwind.config = {
         theme: {
           extend: {
             fontFamily: {
-              sans: ['Inter', 'sans-serif'],
+              sans: ['Manrope', 'sans-serif'],
+              display: ['Sora', 'sans-serif'],
             },
             colors: {
               brand: {
-                50: '#f0f9ff',
-                100: '#e0f2fe',
-                500: '#0ea5e9',
-                600: '#0284c7',
-                700: '#0369a1',
-                900: '#0c4a6e',
+                50: '#eef8ff',
+                100: '#d7ecfb',
+                500: '#0f7db6',
+                600: '#0a6696',
+                700: '#0a4d70',
+                900: '#0f2f47',
               },
               accent: {
-                500: '#10b981', // Emerald for land/nature
+                500: '#1f9d72',
+              },
+              earth: {
+                50: '#f4f7ee',
+                100: '#e7efda',
+                300: '#bcd19c',
+                500: '#6d8f45',
+                700: '#3e5f29',
               },
               dark: {
                 800: '#1e293b',
@@ -36,9 +44,27 @@
       }
     </script>
     <style>
+      :root {
+        --bg-start: #e7f2ef;
+        --bg-mid: #f4f8f5;
+        --bg-end: #edf4fb;
+        --panel-border: #dce6df;
+      }
       body {
-        font-family: 'Inter', sans-serif;
-        background-color: #f8fafc;
+        font-family: 'Manrope', sans-serif;
+        background:
+          radial-gradient(1200px 800px at -15% -20%, #d3ece2 0%, transparent 65%),
+          radial-gradient(1000px 700px at 120% -10%, #d8e8f7 0%, transparent 60%),
+          linear-gradient(170deg, var(--bg-start) 0%, var(--bg-mid) 48%, var(--bg-end) 100%);
+        color: #0f172a;
+      }
+      #root {
+        min-height: 100vh;
+      }
+      .panel-surface {
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88));
+        border: 1px solid var(--panel-border);
+        backdrop-filter: blur(6px);
       }
       /* Custom scrollbar for sidebar */
       ::-webkit-scrollbar {

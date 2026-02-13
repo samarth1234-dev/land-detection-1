@@ -16,7 +16,20 @@ import {
   Upload,
   Cpu,
   Loader2,
-  Layers
+  Layers,
+  Activity,
+  ArrowUpRight,
+  Clock3,
+  Filter,
+  Download,
+  Sparkles,
+  Shield,
+  Mail,
+  KeyRound,
+  Wallet,
+  LogIn,
+  UserPlus,
+  LogOut
 } from 'lucide-react';
 
 export const Icons = {
@@ -36,5 +49,18 @@ export const Icons = {
   Upload: Upload,
   AI: Cpu,
   Spinner: Loader2,
-  Layers: Layers
+  Layers: Layers,
+  Activity: Activity,
+  TrendUp: ArrowUpRight,
+  Clock: Clock3,
+  Filter: Filter,
+  Download: Download,
+  Sparkles: Sparkles,
+  Shield: Shield,
+  Mail: Mail,
+  Key: KeyRound,
+  Wallet: Wallet,
+  LogIn: LogIn,
+  UserPlus: UserPlus,
+  LogOut: LogOut
 };
