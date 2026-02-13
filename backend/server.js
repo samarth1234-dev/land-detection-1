@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 
-import { initDatabase, pool, query, withTransaction } from './db.js';
+import { closeDatabase, initDatabase, query, withTransaction } from './db.js';
 
 dotenv.config();
 
@@ -33,6 +33,8 @@ app.use(
     credentials: true,
   })
 );
+
+let databaseReady = false;
 
 const hashBlock = (block) =>
   crypto
@@ -123,44 +125,45 @@ const ensureGenesisBlock = async () => {
   );
 };
 
-const appendChainBlock = async (eventType, payload) => {
-  return withTransaction(async (client) => {
-    const latestResult = await client.query(
-      'SELECT block_index, hash FROM chain_blocks ORDER BY block_index DESC LIMIT 1 FOR UPDATE'
-    );
-    const latest = latestResult.rows[0];
+const insertChainBlock = async (client, eventType, payload) => {
+  const latestResult = await client.query(
+    'SELECT block_index, hash FROM chain_blocks ORDER BY block_index DESC LIMIT 1 FOR UPDATE'
+  );
+  const latest = latestResult.rows[0];
 
-    const blockBase = {
-      index: latest ? Number(latest.block_index) + 1 : 0,
-      timestamp: new Date().toISOString(),
-      eventType,
-      payload,
-      previousHash: latest ? latest.hash : '0',
-      nonce: 0,
-    };
-    const hash = hashBlock(blockBase);
+  const blockBase = {
+    index: latest ? Number(latest.block_index) + 1 : 0,
+    timestamp: new Date().toISOString(),
+    eventType,
+    payload,
+    previousHash: latest ? latest.hash : '0',
+    nonce: 0,
+  };
+  const hash = hashBlock(blockBase);
 
-    const insertResult = await client.query(
-      `
-        INSERT INTO chain_blocks
-        (block_index, block_timestamp, event_type, payload, previous_hash, nonce, hash)
-        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
-        RETURNING *
-      `,
-      [
-        blockBase.index,
-        blockBase.timestamp,
-        blockBase.eventType,
-        JSON.stringify(blockBase.payload),
-        blockBase.previousHash,
-        blockBase.nonce,
-        hash,
-      ]
-    );
+  const insertResult = await client.query(
+    `
+      INSERT INTO chain_blocks
+      (block_index, block_timestamp, event_type, payload, previous_hash, nonce, hash)
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+      RETURNING *
+    `,
+    [
+      blockBase.index,
+      blockBase.timestamp,
+      blockBase.eventType,
+      JSON.stringify(blockBase.payload),
+      blockBase.previousHash,
+      blockBase.nonce,
+      hash,
+    ]
+  );
 
-    return toChainBlock(insertResult.rows[0]);
-  });
+  return toChainBlock(insertResult.rows[0]);
 };
+
+const appendChainBlock = async (eventType, payload) =>
+  withTransaction((client) => insertChainBlock(client, eventType, payload));
 
 const verifyChainIntegrity = (chain) => {
   if (!Array.isArray(chain) || !chain.length) {
@@ -257,6 +260,145 @@ const deriveAgricultureInsights = ({ ndviMean, rainfall7d, maxTempAvg, minTempAv
   };
 };
 
+const DISPUTE_STATUSES = new Set(['OPEN', 'IN_REVIEW', 'RESOLVED', 'REJECTED']);
+const DISPUTE_TYPES = new Set([
+  'BOUNDARY',
+  'OWNERSHIP',
+  'ENCROACHMENT',
+  'LAND_USE_VIOLATION',
+  'DOCUMENT_FRAUD',
+  'ACCESS_RIGHT',
+]);
+const DISPUTE_PRIORITIES = new Set(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+
+const normalizeToken = (value) => String(value || '').trim().toUpperCase().replaceAll(' ', '_');
+
+const sanitizeEvidenceUrls = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => String(item || '').trim())
+    .filter((item) => item.length > 0)
+    .slice(0, 8);
+};
+
+const stableStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value)
+      .sort()
+      .map((key) => `"${key}":${stableStringify(value[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const sha256Hex = (value) =>
+  crypto
+    .createHash('sha256')
+    .update(typeof value === 'string' ? value : stableStringify(value))
+    .digest('hex');
+
+const toCoordPair = (value) => {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const lat = Number(value[0]);
+  const lng = Number(value[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return [Number(lat.toFixed(6)), Number(lng.toFixed(6))];
+};
+
+const sanitizeSelectionBounds = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const northWest = toCoordPair(value.northWest);
+  const northEast = toCoordPair(value.northEast);
+  const southWest = toCoordPair(value.southWest);
+  const southEast = toCoordPair(value.southEast);
+  const center = toCoordPair(value.center);
+
+  if (!northWest || !northEast || !southWest || !southEast) return null;
+
+  const derivedCenter = center || [
+    Number(((northWest[0] + southEast[0]) / 2).toFixed(6)),
+    Number(((northWest[1] + southEast[1]) / 2).toFixed(6)),
+  ];
+
+  return {
+    northWest,
+    northEast,
+    southWest,
+    southEast,
+    center: derivedCenter,
+  };
+};
+
+const buildDisputeSnapshot = ({
+  parcelRef,
+  disputeType,
+  description,
+  coords,
+  selectionBounds,
+  status,
+  priority,
+  evidenceUrls,
+  resolutionNote,
+}) => ({
+  parcelRef: String(parcelRef || '').trim(),
+  disputeType: normalizeToken(disputeType),
+  description: String(description || '').trim(),
+  coords: toCoordPair(coords) || null,
+  selectionBounds: sanitizeSelectionBounds(selectionBounds),
+  status: normalizeToken(status || 'OPEN'),
+  priority: normalizeToken(priority || 'MEDIUM'),
+  evidenceUrls: sanitizeEvidenceUrls(evidenceUrls),
+  resolutionNote: String(resolutionNote || '').trim() || null,
+});
+
+const disputeSnapshotHash = (snapshot) => sha256Hex(snapshot);
+
+const disputeRowToSnapshot = (row) =>
+  buildDisputeSnapshot({
+    parcelRef: row.parcel_ref,
+    disputeType: row.dispute_type,
+    description: row.description,
+    coords: [row.latitude, row.longitude],
+    selectionBounds: row.selection_bounds,
+    status: row.status,
+    priority: row.priority,
+    evidenceUrls: row.evidence_urls,
+    resolutionNote: row.resolution_note,
+  });
+
+const toDisputeRecord = (row) => {
+  const hasCoords = Number.isFinite(Number(row.latitude)) && Number.isFinite(Number(row.longitude));
+  const snapshotHash = disputeSnapshotHash(disputeRowToSnapshot(row));
+  return {
+    id: row.id,
+    parcelRef: row.parcel_ref,
+    disputeType: row.dispute_type,
+    description: row.description,
+    coords: hasCoords ? [Number(row.latitude), Number(row.longitude)] : null,
+    selectionBounds:
+      row.selection_bounds && typeof row.selection_bounds === 'object' && !Array.isArray(row.selection_bounds)
+        ? row.selection_bounds
+        : null,
+    status: row.status,
+    priority: row.priority,
+    evidenceUrls: Array.isArray(row.evidence_urls) ? row.evidence_urls : [],
+    resolutionNote: row.resolution_note || null,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    resolvedAt: toIso(row.resolved_at),
+    snapshotHash,
+    ledgerBlock: {
+      index: row.ledger_block_index,
+      hash: row.ledger_block_hash,
+    },
+  };
+};
+
 const authMiddleware = (req, res, next) => {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
@@ -288,8 +430,104 @@ const readOptionalUserId = (req) => {
   }
 };
 
+const SETTINGS_MAP_LAYERS = new Set(['OSM', 'SAT']);
+
+const toUserSettings = (row) => ({
+  organization: row.organization || '',
+  roleTitle: row.role_title || '',
+  phone: row.phone || '',
+  preferredLanguage: row.preferred_language || 'en',
+  defaultMapLayer: row.default_map_layer || 'SAT',
+  mapDefaultCenter: [Number(row.map_default_lat), Number(row.map_default_lng)],
+  mapDefaultZoom: Number(row.map_default_zoom || 12),
+  notifications: {
+    disputeUpdates: Boolean(row.notify_dispute_updates),
+    ndviReady: Boolean(row.notify_ndvi_ready),
+    weeklyDigest: Boolean(row.notify_weekly_digest),
+  },
+  createdAt: toIso(row.created_at),
+  updatedAt: toIso(row.updated_at),
+});
+
+const ensureUserSettings = async (executor, userId) => {
+  const runQuery = typeof executor === 'function'
+    ? (text, params) => executor(text, params)
+    : (text, params) => executor.query(text, params);
+
+  const existing = await runQuery(
+    'SELECT * FROM user_settings WHERE user_id = $1 LIMIT 1',
+    [userId]
+  );
+  if (existing.rows[0]) return existing.rows[0];
+
+  const now = new Date().toISOString();
+  const inserted = await runQuery(
+    `
+      INSERT INTO user_settings (
+        user_id, organization, role_title, phone, preferred_language, default_map_layer,
+        map_default_lat, map_default_lng, map_default_zoom,
+        notify_dispute_updates, notify_ndvi_ready, notify_weekly_digest,
+        created_at, updated_at
+      )
+      VALUES (
+        $1, '', '', '', 'en', 'SAT',
+        28.6139, 77.2090, 12,
+        true, true, false,
+        $2, $2
+      )
+      RETURNING *
+    `,
+    [userId, now]
+  );
+  return inserted.rows[0];
+};
+
+const normalizeText = (value, maxLength = 140) =>
+  String(value || '')
+    .trim()
+    .slice(0, maxLength);
+
+const sanitizePreferredLanguage = (value) => {
+  const normalized = normalizeText(value, 12).toLowerCase();
+  return normalized || 'en';
+};
+
+const sanitizeMapCenter = (value) => {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const lat = Number(value[0]);
+  const lng = Number(value[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return [Number(lat.toFixed(6)), Number(lng.toFixed(6))];
+};
+
+app.use((req, res, next) => {
+  if (databaseReady || req.path === '/api/health') {
+    next();
+    return;
+  }
+
+  res.status(503).json({
+    message: 'Database is initializing. Please retry in a few seconds.',
+    status: 'starting',
+  });
+});
+
 app.get('/api/health', async (_req, res) => {
+  if (!databaseReady) {
+    res.json({
+      status: 'starting',
+      service: 'root-auth-api',
+      persistence: 'postgresql',
+      blockchainIntegrity: false,
+      totalBlocks: 0,
+      totalDisputes: 0,
+    });
+    return;
+  }
+
   const chain = await getChainBlocks();
+  const disputeCountResult = await query('SELECT COUNT(*)::int AS count FROM land_disputes');
   const integrity = verifyChainIntegrity(chain);
   res.json({
     status: 'ok',
@@ -297,6 +535,7 @@ app.get('/api/health', async (_req, res) => {
     persistence: 'postgresql',
     blockchainIntegrity: integrity.valid,
     totalBlocks: chain.length,
+    totalDisputes: disputeCountResult.rows[0]?.count || 0,
   });
 });
 
@@ -473,6 +712,430 @@ app.get('/api/agri/insights/history', authMiddleware, async (req, res) => {
   }
 });
 
+app.get('/api/disputes/summary', authMiddleware, async (req, res) => {
+  try {
+    const result = await query(
+      `
+        SELECT
+          COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status = 'OPEN')::int AS open,
+          COUNT(*) FILTER (WHERE status = 'IN_REVIEW')::int AS in_review,
+          COUNT(*) FILTER (WHERE status = 'RESOLVED')::int AS resolved,
+          COUNT(*) FILTER (WHERE status = 'REJECTED')::int AS rejected,
+          COUNT(*) FILTER (WHERE priority IN ('HIGH', 'CRITICAL') AND status IN ('OPEN', 'IN_REVIEW'))::int AS urgent_open
+        FROM land_disputes
+        WHERE user_id = $1
+      `,
+      [req.auth.sub]
+    );
+
+    res.json(result.rows[0] || {
+      total: 0,
+      open: 0,
+      in_review: 0,
+      resolved: 0,
+      rejected: 0,
+      urgent_open: 0,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load dispute summary.', error: error.message });
+  }
+});
+
+app.get('/api/disputes', authMiddleware, async (req, res) => {
+  try {
+    const statusFilter = req.query?.status ? normalizeToken(req.query.status) : '';
+    if (statusFilter && !DISPUTE_STATUSES.has(statusFilter)) {
+      res.status(400).json({ message: `Invalid status filter. Allowed: ${Array.from(DISPUTE_STATUSES).join(', ')}` });
+      return;
+    }
+
+    const params = [req.auth.sub];
+    let whereClause = 'WHERE user_id = $1';
+    if (statusFilter) {
+      params.push(statusFilter);
+      whereClause += ` AND status = $${params.length}`;
+    }
+
+    const result = await query(
+      `
+        SELECT
+          id, parcel_ref, dispute_type, description, latitude, longitude, selection_bounds,
+          status, priority, evidence_urls, resolution_note,
+          created_at, updated_at, resolved_at,
+          ledger_block_index, ledger_block_hash
+        FROM land_disputes
+        ${whereClause}
+        ORDER BY updated_at DESC
+        LIMIT 100
+      `,
+      params
+    );
+
+    res.json({ items: result.rows.map(toDisputeRecord) });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to fetch land disputes.', error: error.message });
+  }
+});
+
+app.post('/api/disputes', authMiddleware, async (req, res) => {
+  try {
+    const parcelRef = String(req.body?.parcelRef || '').trim();
+    const disputeType = normalizeToken(req.body?.disputeType);
+    const description = String(req.body?.description || '').trim();
+    const priority = req.body?.priority ? normalizeToken(req.body?.priority) : 'MEDIUM';
+    const coords = Array.isArray(req.body?.coords) ? req.body.coords : null;
+    const selectionBounds = sanitizeSelectionBounds(req.body?.selectionBounds);
+    const evidenceUrls = sanitizeEvidenceUrls(req.body?.evidenceUrls);
+
+    if (!parcelRef) {
+      res.status(400).json({ message: 'parcelRef is required.' });
+      return;
+    }
+    if (!DISPUTE_TYPES.has(disputeType)) {
+      res.status(400).json({ message: `Invalid disputeType. Allowed: ${Array.from(DISPUTE_TYPES).join(', ')}` });
+      return;
+    }
+    if (description.length < 15) {
+      res.status(400).json({ message: 'description must be at least 15 characters.' });
+      return;
+    }
+    if (!DISPUTE_PRIORITIES.has(priority)) {
+      res.status(400).json({ message: `Invalid priority. Allowed: ${Array.from(DISPUTE_PRIORITIES).join(', ')}` });
+      return;
+    }
+    if (req.body?.selectionBounds && !selectionBounds) {
+      res.status(400).json({ message: 'selectionBounds is invalid. Use northWest/northEast/southWest/southEast/center coordinate pairs.' });
+      return;
+    }
+
+    let lat = null;
+    let lng = null;
+    if (coords) {
+      lat = Number(coords[0]);
+      lng = Number(coords[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        res.status(400).json({ message: 'coords must be [lat, lng] when provided.' });
+        return;
+      }
+    } else if (selectionBounds?.center) {
+      lat = selectionBounds.center[0];
+      lng = selectionBounds.center[1];
+    }
+
+    const disputeSnapshot = buildDisputeSnapshot({
+      parcelRef,
+      disputeType,
+      description,
+      coords: [lat, lng],
+      selectionBounds,
+      status: 'OPEN',
+      priority,
+      evidenceUrls,
+      resolutionNote: null,
+    });
+    const snapshotHash = disputeSnapshotHash(disputeSnapshot);
+
+    const payload = await withTransaction(async (client) => {
+      const id = crypto.randomUUID();
+      const now = new Date().toISOString();
+      const status = 'OPEN';
+
+      const block = await insertChainBlock(client, 'LAND_DISPUTE_CREATED', {
+        userId: req.auth.sub,
+        disputeId: id,
+        parcelRef,
+        disputeType,
+        priority,
+        hasSelectionBounds: Boolean(selectionBounds),
+        snapshotHash,
+        status,
+      });
+
+      const disputeResult = await client.query(
+        `
+          INSERT INTO land_disputes (
+            id, user_id, parcel_ref, dispute_type, description, latitude, longitude, selection_bounds,
+            status, priority, evidence_urls, resolution_note,
+            created_at, updated_at, resolved_at,
+            ledger_block_index, ledger_block_hash
+          )
+          VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8::jsonb,
+            $9, $10, $11::jsonb, $12,
+            $13, $14, $15,
+            $16, $17
+          )
+          RETURNING *
+        `,
+        [
+          id,
+          req.auth.sub,
+          parcelRef,
+          disputeType,
+          description,
+          lat,
+          lng,
+          selectionBounds ? JSON.stringify(selectionBounds) : null,
+          status,
+          priority,
+          JSON.stringify(evidenceUrls),
+          null,
+          now,
+          now,
+          null,
+          block.index,
+          block.hash,
+        ]
+      );
+
+      await client.query(
+        `
+          INSERT INTO dispute_events (
+            id, dispute_id, actor_user_id, event_type, from_status, to_status, note,
+            created_at, ledger_block_index, ledger_block_hash
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `,
+        [
+          crypto.randomUUID(),
+          id,
+          req.auth.sub,
+          'CREATED',
+          null,
+          status,
+          description.slice(0, 300),
+          now,
+          block.index,
+          block.hash,
+        ]
+      );
+
+      return {
+        item: toDisputeRecord(disputeResult.rows[0]),
+        ledgerBlock: {
+          index: block.index,
+          hash: block.hash,
+          eventType: block.eventType,
+          timestamp: block.timestamp,
+        },
+        snapshotHash,
+      };
+    });
+
+    res.status(201).json(payload);
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to create land dispute.', error: error.message });
+  }
+});
+
+app.patch('/api/disputes/:id/status', authMiddleware, async (req, res) => {
+  try {
+    const disputeId = String(req.params.id || '').trim();
+    const nextStatus = normalizeToken(req.body?.status);
+    const note = String(req.body?.note || '').trim();
+
+    if (!disputeId) {
+      res.status(400).json({ message: 'Dispute id is required.' });
+      return;
+    }
+    if (!DISPUTE_STATUSES.has(nextStatus)) {
+      res.status(400).json({ message: `Invalid status. Allowed: ${Array.from(DISPUTE_STATUSES).join(', ')}` });
+      return;
+    }
+
+    const payload = await withTransaction(async (client) => {
+      const currentResult = await client.query(
+        'SELECT * FROM land_disputes WHERE id = $1 AND user_id = $2 LIMIT 1 FOR UPDATE',
+        [disputeId, req.auth.sub]
+      );
+      const current = currentResult.rows[0];
+      if (!current) return null;
+      if (current.status === nextStatus) {
+        return { unchanged: true, current: toDisputeRecord(current) };
+      }
+
+      const now = new Date().toISOString();
+      const resolvedAt = nextStatus === 'RESOLVED' ? now : null;
+      const resolutionNote = nextStatus === 'RESOLVED' ? (note || current.resolution_note || null) : null;
+      const nextSnapshot = buildDisputeSnapshot({
+        parcelRef: current.parcel_ref,
+        disputeType: current.dispute_type,
+        description: current.description,
+        coords: [current.latitude, current.longitude],
+        selectionBounds: current.selection_bounds,
+        status: nextStatus,
+        priority: current.priority,
+        evidenceUrls: current.evidence_urls,
+        resolutionNote,
+      });
+      const snapshotHash = disputeSnapshotHash(nextSnapshot);
+
+      const block = await insertChainBlock(client, 'LAND_DISPUTE_STATUS_UPDATED', {
+        userId: req.auth.sub,
+        disputeId,
+        fromStatus: current.status,
+        toStatus: nextStatus,
+        snapshotHash,
+        note: note || null,
+      });
+
+      const updateResult = await client.query(
+        `
+          UPDATE land_disputes
+          SET
+            status = $1,
+            resolution_note = $2,
+            updated_at = $3,
+            resolved_at = $4,
+            ledger_block_index = $5,
+            ledger_block_hash = $6
+          WHERE id = $7
+          RETURNING *
+        `,
+        [nextStatus, resolutionNote, now, resolvedAt, block.index, block.hash, disputeId]
+      );
+
+      await client.query(
+        `
+          INSERT INTO dispute_events (
+            id, dispute_id, actor_user_id, event_type, from_status, to_status, note,
+            created_at, ledger_block_index, ledger_block_hash
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        `,
+        [
+          crypto.randomUUID(),
+          disputeId,
+          req.auth.sub,
+          'STATUS_UPDATED',
+          current.status,
+          nextStatus,
+          note || null,
+          now,
+          block.index,
+          block.hash,
+        ]
+      );
+
+      return {
+        unchanged: false,
+        item: toDisputeRecord(updateResult.rows[0]),
+        ledgerBlock: {
+          index: block.index,
+          hash: block.hash,
+          eventType: block.eventType,
+          timestamp: block.timestamp,
+        },
+        snapshotHash,
+      };
+    });
+
+    if (!payload) {
+      res.status(404).json({ message: 'Dispute not found.' });
+      return;
+    }
+    if (payload.unchanged) {
+      res.status(409).json({ message: 'Dispute already in requested status.', item: payload.current });
+      return;
+    }
+
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to update dispute status.', error: error.message });
+  }
+});
+
+app.get('/api/disputes/:id/ledger/verify', authMiddleware, async (req, res) => {
+  try {
+    const disputeId = String(req.params.id || '').trim();
+    if (!disputeId) {
+      res.status(400).json({ message: 'Dispute id is required.' });
+      return;
+    }
+
+    const disputeResult = await query(
+      'SELECT * FROM land_disputes WHERE id = $1 AND user_id = $2 LIMIT 1',
+      [disputeId, req.auth.sub]
+    );
+    const dispute = disputeResult.rows[0];
+    if (!dispute) {
+      res.status(404).json({ message: 'Dispute not found.' });
+      return;
+    }
+
+    const eventResult = await query(
+      `
+        SELECT
+          de.id AS event_id,
+          de.event_type AS dispute_event_type,
+          de.from_status,
+          de.to_status,
+          de.note,
+          de.created_at AS event_created_at,
+          cb.block_index,
+          cb.block_timestamp,
+          cb.event_type,
+          cb.payload,
+          cb.previous_hash,
+          cb.nonce,
+          cb.hash
+        FROM dispute_events de
+        JOIN chain_blocks cb
+          ON cb.block_index = de.ledger_block_index
+         AND cb.hash = de.ledger_block_hash
+        WHERE de.dispute_id = $1
+        ORDER BY de.created_at ASC
+      `,
+      [disputeId]
+    );
+
+    const events = eventResult.rows;
+    const blockIntegrityValid = events.every((row) => {
+      const expected = hashBlock({
+        index: row.block_index,
+        timestamp: row.block_timestamp,
+        eventType: row.event_type,
+        payload: row.payload,
+        previousHash: row.previous_hash,
+        nonce: row.nonce,
+      });
+      return expected === row.hash;
+    });
+
+    const currentSnapshotHash = disputeSnapshotHash(disputeRowToSnapshot(dispute));
+    const latestEvent = events[events.length - 1];
+    const latestSnapshotHash = latestEvent?.payload?.snapshotHash || null;
+    const snapshotMatch = Boolean(latestSnapshotHash) && latestSnapshotHash === currentSnapshotHash;
+
+    const missingSnapshotHashEvents = events.filter(
+      (row) => !row?.payload || !row.payload.snapshotHash
+    ).length;
+
+    res.json({
+      disputeId,
+      valid: blockIntegrityValid && snapshotMatch,
+      blockIntegrityValid,
+      snapshotMatch,
+      currentSnapshotHash,
+      latestSnapshotHash,
+      eventCount: events.length,
+      missingSnapshotHashEvents,
+      events: events.map((row) => ({
+        eventId: row.event_id,
+        disputeEventType: row.dispute_event_type,
+        blockIndex: row.block_index,
+        blockHash: row.hash,
+        chainEventType: row.event_type,
+        snapshotHash: row?.payload?.snapshotHash || null,
+        createdAt: toIso(row.event_created_at),
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to verify dispute ledger.', error: error.message });
+  }
+});
+
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
@@ -523,6 +1186,8 @@ app.post('/api/auth/signup', async (req, res) => {
         newUser.lastLoginAt,
       ]
     );
+
+    await ensureUserSettings(query, newUser.id);
 
     const block = await appendChainBlock('USER_SIGNUP', {
       userId: newUser.id,
@@ -624,6 +1289,275 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   res.json({ user: toPublicUser(user) });
 });
 
+app.get('/api/settings/profile', authMiddleware, async (req, res) => {
+  try {
+    const userResult = await query('SELECT * FROM users WHERE id = $1 LIMIT 1', [req.auth.sub]);
+    const user = userResult.rows[0];
+    if (!user) {
+      res.status(404).json({ message: 'User not found.' });
+      return;
+    }
+
+    const settings = await ensureUserSettings(query, req.auth.sub);
+    res.json({
+      user: toPublicUser(user),
+      settings: toUserSettings(settings),
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load settings profile.', error: error.message });
+  }
+});
+
+app.put('/api/settings/profile', authMiddleware, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name, 80);
+    const walletAddressRaw = normalizeText(req.body?.walletAddress, 128);
+    const organization = normalizeText(req.body?.organization, 120);
+    const roleTitle = normalizeText(req.body?.roleTitle, 120);
+    const phone = normalizeText(req.body?.phone, 40);
+    const preferredLanguage = sanitizePreferredLanguage(req.body?.preferredLanguage);
+
+    if (!name) {
+      res.status(400).json({ message: 'Name is required.' });
+      return;
+    }
+
+    const payload = await withTransaction(async (client) => {
+      const userResult = await client.query(
+        'SELECT * FROM users WHERE id = $1 LIMIT 1 FOR UPDATE',
+        [req.auth.sub]
+      );
+      const currentUser = userResult.rows[0];
+      if (!currentUser) return null;
+
+      const walletAddress = walletAddressRaw || null;
+      const settings = await ensureUserSettings(client, req.auth.sub);
+      const now = new Date().toISOString();
+
+      const updatedUserResult = await client.query(
+        `
+          UPDATE users
+          SET name = $1, wallet_address = $2
+          WHERE id = $3
+          RETURNING *
+        `,
+        [name, walletAddress, req.auth.sub]
+      );
+
+      const updatedSettingsResult = await client.query(
+        `
+          UPDATE user_settings
+          SET
+            organization = $1,
+            role_title = $2,
+            phone = $3,
+            preferred_language = $4,
+            updated_at = $5
+          WHERE user_id = $6
+          RETURNING *
+        `,
+        [organization, roleTitle, phone, preferredLanguage, now, req.auth.sub]
+      );
+
+      const profileSnapshot = {
+        userId: req.auth.sub,
+        name,
+        walletAddress,
+        organization,
+        roleTitle,
+        phone,
+        preferredLanguage,
+      };
+      const profileHash = sha256Hex(profileSnapshot);
+
+      const block = await insertChainBlock(client, 'SETTINGS_PROFILE_UPDATED', {
+        userId: req.auth.sub,
+        profileHash,
+      });
+
+      return {
+        user: toPublicUser(updatedUserResult.rows[0]),
+        settings: toUserSettings(updatedSettingsResult.rows[0] || settings),
+        ledgerBlock: {
+          index: block.index,
+          hash: block.hash,
+          eventType: block.eventType,
+          timestamp: block.timestamp,
+        },
+      };
+    });
+
+    if (!payload) {
+      res.status(404).json({ message: 'User not found.' });
+      return;
+    }
+
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to update profile settings.', error: error.message });
+  }
+});
+
+app.put('/api/settings/preferences', authMiddleware, async (req, res) => {
+  try {
+    const defaultMapLayer = normalizeToken(req.body?.defaultMapLayer || 'SAT');
+    if (!SETTINGS_MAP_LAYERS.has(defaultMapLayer)) {
+      res.status(400).json({ message: `Invalid defaultMapLayer. Allowed: ${Array.from(SETTINGS_MAP_LAYERS).join(', ')}` });
+      return;
+    }
+
+    const mapCenter = sanitizeMapCenter(req.body?.mapDefaultCenter);
+    if (req.body?.mapDefaultCenter && !mapCenter) {
+      res.status(400).json({ message: 'mapDefaultCenter must be [lat, lng].' });
+      return;
+    }
+
+    const rawZoom = Number(req.body?.mapDefaultZoom);
+    const mapDefaultZoom = Number.isFinite(rawZoom) ? Math.round(clampNumber(rawZoom, 3, 18)) : 12;
+
+    const notifications = req.body?.notifications || {};
+    const notifyDisputeUpdates = notifications.disputeUpdates !== false;
+    const notifyNdviReady = notifications.ndviReady !== false;
+    const notifyWeeklyDigest = notifications.weeklyDigest === true;
+
+    const payload = await withTransaction(async (client) => {
+      const currentSettings = await ensureUserSettings(client, req.auth.sub);
+      const now = new Date().toISOString();
+
+      const nextCenter = mapCenter || [
+        Number(currentSettings.map_default_lat),
+        Number(currentSettings.map_default_lng),
+      ];
+
+      const updatedSettingsResult = await client.query(
+        `
+          UPDATE user_settings
+          SET
+            default_map_layer = $1,
+            map_default_lat = $2,
+            map_default_lng = $3,
+            map_default_zoom = $4,
+            notify_dispute_updates = $5,
+            notify_ndvi_ready = $6,
+            notify_weekly_digest = $7,
+            updated_at = $8
+          WHERE user_id = $9
+          RETURNING *
+        `,
+        [
+          defaultMapLayer,
+          nextCenter[0],
+          nextCenter[1],
+          mapDefaultZoom,
+          notifyDisputeUpdates,
+          notifyNdviReady,
+          notifyWeeklyDigest,
+          now,
+          req.auth.sub,
+        ]
+      );
+
+      const prefSnapshot = {
+        userId: req.auth.sub,
+        defaultMapLayer,
+        mapDefaultCenter: nextCenter,
+        mapDefaultZoom,
+        notifications: {
+          disputeUpdates: notifyDisputeUpdates,
+          ndviReady: notifyNdviReady,
+          weeklyDigest: notifyWeeklyDigest,
+        },
+      };
+      const preferencesHash = sha256Hex(prefSnapshot);
+
+      const block = await insertChainBlock(client, 'SETTINGS_PREFERENCES_UPDATED', {
+        userId: req.auth.sub,
+        preferencesHash,
+      });
+
+      return {
+        settings: toUserSettings(updatedSettingsResult.rows[0]),
+        ledgerBlock: {
+          index: block.index,
+          hash: block.hash,
+          eventType: block.eventType,
+          timestamp: block.timestamp,
+        },
+      };
+    });
+
+    res.json(payload);
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to update preference settings.', error: error.message });
+  }
+});
+
+app.post('/api/settings/password', authMiddleware, async (req, res) => {
+  try {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const nextPassword = String(req.body?.nextPassword || '');
+
+    if (!currentPassword || !nextPassword) {
+      res.status(400).json({ message: 'currentPassword and nextPassword are required.' });
+      return;
+    }
+
+    if (nextPassword.length < 8) {
+      res.status(400).json({ message: 'nextPassword must be at least 8 characters.' });
+      return;
+    }
+
+    const payload = await withTransaction(async (client) => {
+      const userResult = await client.query(
+        'SELECT * FROM users WHERE id = $1 LIMIT 1 FOR UPDATE',
+        [req.auth.sub]
+      );
+      const user = userResult.rows[0];
+      if (!user) return null;
+
+      const isValid = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!isValid) return { invalidPassword: true };
+
+      const nextHash = await bcrypt.hash(nextPassword, 12);
+      await client.query(
+        'UPDATE users SET password_hash = $1 WHERE id = $2',
+        [nextHash, req.auth.sub]
+      );
+
+      const block = await insertChainBlock(client, 'USER_PASSWORD_CHANGED', {
+        userId: req.auth.sub,
+        changedAt: new Date().toISOString(),
+      });
+
+      return {
+        invalidPassword: false,
+        ledgerBlock: {
+          index: block.index,
+          hash: block.hash,
+          eventType: block.eventType,
+          timestamp: block.timestamp,
+        },
+      };
+    });
+
+    if (!payload) {
+      res.status(404).json({ message: 'User not found.' });
+      return;
+    }
+    if (payload.invalidPassword) {
+      res.status(401).json({ message: 'Current password is incorrect.' });
+      return;
+    }
+
+    res.json({
+      message: 'Password updated successfully.',
+      ledgerBlock: payload.ledgerBlock,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to update password.', error: error.message });
+  }
+});
+
 app.get('/api/auth/chain/verify', async (_req, res) => {
   const chain = await getChainBlocks();
   const integrity = verifyChainIntegrity(chain);
@@ -642,8 +1576,25 @@ app.use((error, _req, res, _next) => {
   res.status(status).json({ message: error.message || 'Internal server error.' });
 });
 
-await initDatabase();
-await ensureGenesisBlock();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const startDatabaseWithRetry = async () => {
+  while (!databaseReady) {
+    try {
+      await initDatabase();
+      await ensureGenesisBlock();
+      databaseReady = true;
+      console.log('Database initialization complete.');
+    } catch (error) {
+      databaseReady = false;
+      console.error(`Database init failed: ${error.message}`);
+      console.error('Retrying in 5 seconds...');
+      await sleep(5000);
+    }
+  }
+};
+
+void startDatabaseWithRetry();
 
 app.listen(PORT, () => {
   console.log(`Auth API running on http://127.0.0.1:${PORT}`);
@@ -654,6 +1605,6 @@ app.listen(PORT, () => {
 });
 
 process.on('SIGINT', async () => {
-  await pool.end();
+  await closeDatabase();
   process.exit(0);
 });

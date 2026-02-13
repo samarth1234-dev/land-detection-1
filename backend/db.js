@@ -1,3 +1,4 @@
+import os from 'os';
 import { Pool } from 'pg';
 
 const toBool = (value, fallback = false) => {
@@ -6,7 +7,7 @@ const toBool = (value, fallback = false) => {
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
 };
 
-const buildPoolConfig = () => {
+const buildEnvPoolConfig = () => {
   const connectionString = process.env.DATABASE_URL;
   const sslEnabled = toBool(process.env.DATABASE_SSL, false);
   const ssl = sslEnabled ? { rejectUnauthorized: false } : false;
@@ -19,18 +20,140 @@ const buildPoolConfig = () => {
     host: process.env.DB_HOST || '127.0.0.1',
     port: Number(process.env.DB_PORT || 5432),
     database: process.env.DB_NAME || 'root_land',
-    user: process.env.DB_USER || 'postgres',
+    user: process.env.DB_USER || os.userInfo().username,
     password: process.env.DB_PASSWORD || '',
     ssl,
   };
 };
 
-export const pool = new Pool(buildPoolConfig());
+const buildFallbackCandidates = () => {
+  const envConfig = buildEnvPoolConfig();
+  const currentUser = os.userInfo().username;
+  const targetDb = process.env.DB_NAME || 'root_land';
+  const ssl = envConfig.ssl || false;
 
-export const query = (text, params = []) => pool.query(text, params);
+  const candidates = [{ label: 'env', config: envConfig }];
+
+  if (envConfig.connectionString) {
+    candidates.push({
+      label: 'local-socket-current-user',
+      config: {
+        host: '/tmp',
+        port: 5432,
+        database: targetDb,
+        user: currentUser,
+        password: process.env.DB_PASSWORD || '',
+        ssl: false,
+      },
+    });
+
+    candidates.push({
+      label: 'localhost-current-user',
+      config: {
+        host: '127.0.0.1',
+        port: Number(process.env.DB_PORT || 5432),
+        database: targetDb,
+        user: currentUser,
+        password: process.env.DB_PASSWORD || '',
+        ssl,
+      },
+    });
+  } else if (envConfig.user !== currentUser) {
+    candidates.push({
+      label: 'env-with-current-user',
+      config: {
+        ...envConfig,
+        user: currentUser,
+      },
+    });
+  }
+
+  const seen = new Set();
+  return candidates.filter((entry) => {
+    const key = JSON.stringify(entry.config);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+const quoteIdentifier = (value) => `"${String(value || '').replaceAll('"', '""')}"`;
+
+const formatConfigHint = (config) => {
+  if (config.connectionString) return 'connectionString';
+  return `${config.user || 'unknown'}@${config.host || '127.0.0.1'}:${config.port || 5432}/${config.database || 'postgres'}`;
+};
+
+const tryCreateDatabase = async (config) => {
+  if (config.connectionString || !config.database) return false;
+
+  const adminDatabases = ['postgres', 'template1'];
+  for (const adminDb of adminDatabases) {
+    const adminPool = new Pool({
+      ...config,
+      database: adminDb,
+    });
+
+    try {
+      await adminPool.query(`CREATE DATABASE ${quoteIdentifier(config.database)}`);
+      return true;
+    } catch (error) {
+      if (error.code === '42P04') {
+        return true;
+      }
+      if (error.code === '3D000' && adminDb !== 'template1') {
+        continue;
+      }
+      if (error.code !== '42501') {
+        throw error;
+      }
+    } finally {
+      await adminPool.end().catch(() => {});
+    }
+  }
+
+  return false;
+};
+
+const connectPool = async (config) => {
+  const candidatePool = new Pool(config);
+  try {
+    await candidatePool.query('SELECT 1');
+    return candidatePool;
+  } catch (error) {
+    await candidatePool.end().catch(() => {});
+
+    if (error.code === '3D000') {
+      const created = await tryCreateDatabase(config);
+      if (created) {
+        const retryPool = new Pool(config);
+        try {
+          await retryPool.query('SELECT 1');
+          return retryPool;
+        } catch (retryError) {
+          await retryPool.end().catch(() => {});
+          throw retryError;
+        }
+      }
+    }
+
+    throw error;
+  }
+};
+
+export let pool = null;
+
+const ensurePool = () => {
+  if (!pool) {
+    throw new Error('Database is not initialized. Start backend with a valid PostgreSQL configuration.');
+  }
+  return pool;
+};
+
+export const query = (text, params = []) => ensurePool().query(text, params);
 
 export const withTransaction = async (handler) => {
-  const client = await pool.connect();
+  const client = await ensurePool().connect();
   try {
     await client.query('BEGIN');
     const result = await handler(client);
@@ -54,6 +177,25 @@ const bootstrapSchema = async () => {
       password_hash TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
       last_login_at TIMESTAMPTZ NULL
+    );
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      organization TEXT NOT NULL DEFAULT '',
+      role_title TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      preferred_language TEXT NOT NULL DEFAULT 'en',
+      default_map_layer TEXT NOT NULL DEFAULT 'SAT',
+      map_default_lat DOUBLE PRECISION NOT NULL DEFAULT 28.6139,
+      map_default_lng DOUBLE PRECISION NOT NULL DEFAULT 77.2090,
+      map_default_zoom INTEGER NOT NULL DEFAULT 12,
+      notify_dispute_updates BOOLEAN NOT NULL DEFAULT true,
+      notify_ndvi_ready BOOLEAN NOT NULL DEFAULT true,
+      notify_weekly_digest BOOLEAN NOT NULL DEFAULT false,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
     );
   `);
 
@@ -91,8 +233,75 @@ const bootstrapSchema = async () => {
       ledger_block_hash TEXT NOT NULL
     );
   `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS land_disputes (
+      id UUID PRIMARY KEY,
+      user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+      parcel_ref TEXT NOT NULL,
+      dispute_type TEXT NOT NULL,
+      description TEXT NOT NULL,
+      latitude DOUBLE PRECISION NULL,
+      longitude DOUBLE PRECISION NULL,
+      selection_bounds JSONB NULL,
+      status TEXT NOT NULL DEFAULT 'OPEN',
+      priority TEXT NOT NULL DEFAULT 'MEDIUM',
+      evidence_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+      resolution_note TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      resolved_at TIMESTAMPTZ NULL,
+      ledger_block_index INTEGER NOT NULL REFERENCES chain_blocks(block_index),
+      ledger_block_hash TEXT NOT NULL
+    );
+  `);
+
+  await query(`
+    ALTER TABLE land_disputes
+    ADD COLUMN IF NOT EXISTS selection_bounds JSONB NULL;
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS dispute_events (
+      id UUID PRIMARY KEY,
+      dispute_id UUID NOT NULL REFERENCES land_disputes(id) ON DELETE CASCADE,
+      actor_user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+      event_type TEXT NOT NULL,
+      from_status TEXT NULL,
+      to_status TEXT NULL,
+      note TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      ledger_block_index INTEGER NOT NULL REFERENCES chain_blocks(block_index),
+      ledger_block_hash TEXT NOT NULL
+    );
+  `);
 };
 
 export const initDatabase = async () => {
-  await bootstrapSchema();
+  if (pool) return;
+
+  const candidates = buildFallbackCandidates();
+  const errors = [];
+
+  for (const candidate of candidates) {
+    try {
+      pool = await connectPool(candidate.config);
+      console.log(`PostgreSQL connected (${candidate.label}: ${formatConfigHint(candidate.config)})`);
+      await bootstrapSchema();
+      return;
+    } catch (error) {
+      errors.push(
+        `${candidate.label} (${formatConfigHint(candidate.config)}): ${error.code || 'UNKNOWN'} ${error.message}`
+      );
+    }
+  }
+
+  const summary = errors.join(' | ');
+  throw new Error(`Unable to connect to PostgreSQL. Tried fallbacks. ${summary}`);
+};
+
+export const closeDatabase = async () => {
+  if (!pool) return;
+  await pool.end();
+  pool = null;
 };

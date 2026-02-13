@@ -29,7 +29,8 @@ import {
   Wallet,
   LogIn,
   UserPlus,
-  LogOut
+  LogOut,
+  Gavel
 } from 'lucide-react';
 
 export const Icons = {
@@ -62,5 +63,6 @@ export const Icons = {
   Wallet: Wallet,
   LogIn: LogIn,
   UserPlus: UserPlus,
-  LogOut: LogOut
+  LogOut: LogOut,
+  Gavel: Gavel
 };

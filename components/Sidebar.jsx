@@ -7,6 +7,7 @@ export const Sidebar = ({ currentView, onChangeView, isOpen, setIsOpen, user, on
     { id: AppView.DASHBOARD, label: 'Dashboard', icon: Icons.Dashboard, hint: 'Regional overview' },
     { id: AppView.EXPLORER, label: 'Geo-Explorer', icon: Icons.Map, hint: 'NDVI and parcel check' },
     { id: AppView.RECORDS, label: 'Land Registry', icon: Icons.Database, hint: 'Immutable records' },
+    { id: AppView.DISPUTES, label: 'Land Disputes', icon: Icons.Gavel, hint: 'Case and conflict tracking' },
     { id: AppView.SETTINGS, label: 'Settings', icon: Icons.Settings, hint: 'Platform preferences' },
   ];
 

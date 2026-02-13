@@ -8,6 +8,7 @@ Land intelligence platform with:
 - NDVI-based parcel analysis (Leaflet + Sentinel via Earth Search + TiTiler)
 - Blockchain-style tamper-evident auth ledger
 - Secure login/signup backend with JWT + PostgreSQL persistence
+- Land dispute workflow with map-based parcel selection (2-click rectangle)
 
 ## Local Setup
 
@@ -38,8 +39,25 @@ Prerequisites:
 - `GET /api/auth/chain/verify`
 - `POST /api/agri/insights`
 - `GET /api/agri/insights/history` (authenticated user)
+- `GET /api/disputes/summary` (authenticated user)
+- `GET /api/disputes` (authenticated user)
+- `POST /api/disputes` (authenticated user)
+- `PATCH /api/disputes/:id/status` (authenticated user)
+- `GET /api/disputes/:id/ledger/verify` (authenticated user)
+- `GET /api/settings/profile` (authenticated user)
+- `PUT /api/settings/profile` (authenticated user)
+- `PUT /api/settings/preferences` (authenticated user)
+- `POST /api/settings/password` (authenticated user)
 
 Auth chain data is stored in:
 - `users` table (PostgreSQL)
 - `chain_blocks` table (PostgreSQL)
 - `agri_insights` table (PostgreSQL)
+- `user_settings` table (PostgreSQL)
+- `land_disputes` table (PostgreSQL)
+- `dispute_events` table (PostgreSQL)
+
+Dispute blockchain notes:
+- each dispute create/status event appends a chain block
+- each event carries a dispute snapshot hash
+- map-selected parcel bounds are stored in `selection_bounds`

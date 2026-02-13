@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Icons } from './Icons';
 import { verifyAuthChain } from '../services/authService.js';
 import { fetchAgricultureHistory } from '../services/agriInsightsService.js';
+import { fetchDisputeSummary } from '../services/disputeService.js';
 
 const formatDateTime = (value) => {
   if (!value) return 'NA';
@@ -18,6 +19,14 @@ const formatCoords = (coords = []) => {
 export const Dashboard = () => {
   const [chain, setChain] = useState({ valid: null, totalBlocks: 0, lastHash: null });
   const [insights, setInsights] = useState([]);
+  const [disputeSummary, setDisputeSummary] = useState({
+    total: 0,
+    open: 0,
+    in_review: 0,
+    resolved: 0,
+    rejected: 0,
+    urgent_open: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -28,9 +37,10 @@ export const Dashboard = () => {
       setLoading(true);
       setError('');
       try {
-        const [chainResult, historyResult] = await Promise.all([
+        const [chainResult, historyResult, disputeResult] = await Promise.all([
           verifyAuthChain(),
           fetchAgricultureHistory(),
+          fetchDisputeSummary(),
         ]);
 
         if (!active) return;
@@ -40,6 +50,14 @@ export const Dashboard = () => {
           lastHash: chainResult.lastHash || null,
         });
         setInsights(Array.isArray(historyResult.items) ? historyResult.items : []);
+        setDisputeSummary({
+          total: Number(disputeResult.total || 0),
+          open: Number(disputeResult.open || 0),
+          in_review: Number(disputeResult.in_review || 0),
+          resolved: Number(disputeResult.resolved || 0),
+          rejected: Number(disputeResult.rejected || 0),
+          urgent_open: Number(disputeResult.urgent_open || 0),
+        });
       } catch (loadError) {
         if (!active) return;
         setError(loadError instanceof Error ? loadError.message : 'Unable to load dashboard data.');
@@ -91,7 +109,7 @@ export const Dashboard = () => {
         </section>
       )}
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <article className="panel-surface rounded-xl p-4">
           <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Chain status</p>
           <p className={`mt-2 text-xl font-bold ${chain.valid ? 'text-emerald-700' : 'text-rose-700'}`}>
@@ -118,6 +136,12 @@ export const Dashboard = () => {
           <p className="text-xs uppercase tracking-[0.08em] text-slate-500">High-risk insights</p>
           <p className="mt-2 text-xl font-bold text-amber-700">{loading ? '...' : metrics.highRisk}</p>
           <p className="mt-1 text-xs text-slate-500">Need closer review</p>
+        </article>
+
+        <article className="panel-surface rounded-xl p-4">
+          <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Open disputes</p>
+          <p className="mt-2 text-xl font-bold text-rose-700">{loading ? '...' : disputeSummary.open}</p>
+          <p className="mt-1 text-xs text-slate-500">Urgent: {loading ? '...' : disputeSummary.urgent_open}</p>
         </article>
       </section>
 

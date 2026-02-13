@@ -3,10 +3,12 @@ import { Sidebar } from './components/Sidebar.jsx';
 import { Dashboard } from './components/Dashboard.jsx';
 import { MapExplorer } from './components/MapExplorer.jsx';
 import { LandRecords } from './components/LandRecords.jsx';
+import { LandDisputes } from './components/LandDisputes.jsx';
+import { SettingsPanel } from './components/SettingsPanel.jsx';
 import { AppView } from './constants.js';
 import { Icons } from './components/Icons.jsx';
 import { AuthScreen } from './components/AuthScreen.jsx';
-import { clearSession, fetchCurrentUser, loadSession, verifyAuthChain } from './services/authService.js';
+import { clearSession, fetchCurrentUser, loadSession, saveSession, verifyAuthChain } from './services/authService.js';
 
 const viewMeta = {
   [AppView.DASHBOARD]: {
@@ -20,6 +22,10 @@ const viewMeta = {
   [AppView.RECORDS]: {
     title: 'Land Registry',
     subtitle: 'Blockchain-backed ownership and verification history.'
+  },
+  [AppView.DISPUTES]: {
+    title: 'Land Disputes',
+    subtitle: 'Case filing, review workflow, and tamper-evident updates.'
   },
   [AppView.SETTINGS]: {
     title: 'Settings',
@@ -96,6 +102,18 @@ function App() {
     setSidebarOpen(false);
   };
 
+  const handleSessionUserUpdate = (nextUser) => {
+    setSession((previous) => {
+      if (!previous?.token) return previous;
+      const nextSession = {
+        token: previous.token,
+        user: nextUser,
+      };
+      saveSession(nextSession);
+      return nextSession;
+    });
+  };
+
   const renderContent = () => {
     switch (currentView) {
       case AppView.DASHBOARD:
@@ -104,15 +122,10 @@ function App() {
         return <MapExplorer />;
       case AppView.RECORDS:
         return <LandRecords />;
+      case AppView.DISPUTES:
+        return <LandDisputes />;
       case AppView.SETTINGS:
-        return (
-          <div className="flex h-full items-center justify-center text-slate-400">
-             <div className="text-center">
-               <Icons.Settings className="mx-auto mb-4 h-12 w-12 opacity-50" />
-               <p>Settings panel under development.</p>
-             </div>
-          </div>
-        );
+        return <SettingsPanel onUserUpdate={handleSessionUserUpdate} />;
       default:
         return <Dashboard />;
     }
