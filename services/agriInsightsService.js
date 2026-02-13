@@ -26,3 +26,19 @@ export const fetchAgricultureInsights = async ({ coords, ndviStats }) => {
 
   return parseResponse(response);
 };
+
+export const fetchAgricultureHistory = async () => {
+  const session = loadSession();
+  if (!session?.token) {
+    throw new Error('Authentication required to load agriculture history.');
+  }
+
+  const response = await fetch('/api/agri/insights/history', {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${session.token}`,
+    },
+  });
+
+  return parseResponse(response);
+};
