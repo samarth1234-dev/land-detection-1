@@ -1,3 +1,5 @@
+import { loadSession } from './authService.js';
+
 const parseResponse = async (response) => {
   const text = await response.text();
   const payload = text ? JSON.parse(text) : {};
@@ -12,9 +14,13 @@ const parseResponse = async (response) => {
 };
 
 export const fetchAgricultureInsights = async ({ coords, ndviStats }) => {
+  const session = loadSession();
   const response = await fetch('/api/agri/insights', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(session?.token ? { Authorization: `Bearer ${session.token}` } : {}),
+    },
     body: JSON.stringify({ coords, ndviStats }),
   });
 

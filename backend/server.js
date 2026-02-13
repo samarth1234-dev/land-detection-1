@@ -1,7 +1,4 @@
 import crypto from 'crypto';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
 
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
@@ -9,10 +6,9 @@ import dotenv from 'dotenv';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 
-dotenv.config();
+import { initDatabase, pool, query, withTransaction } from './db.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+dotenv.config();
 
 const PORT = Number(process.env.API_PORT || 4000);
 const JWT_SECRET = process.env.JWT_SECRET || 'replace-me-with-a-strong-secret';
@@ -21,10 +17,6 @@ const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'http://127.0.0.1:3000,http://l
   .split(',')
   .map((item) => item.trim())
   .filter(Boolean);
-
-const DATA_DIR = path.join(__dirname, 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const CHAIN_FILE = path.join(DATA_DIR, 'auth-chain.json');
 
 const app = express();
 
@@ -65,46 +57,29 @@ const createGenesisBlock = () => {
   };
 };
 
-const safeReadJson = async (filePath, fallbackValue) => {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(raw);
-  } catch (error) {
-    return fallbackValue;
-  }
+const toIso = (value) => {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
-
-const writeJson = async (filePath, value) => {
-  await fs.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
-};
-
-const ensureDataStore = async () => {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-
-  const users = await safeReadJson(USERS_FILE, null);
-  if (!Array.isArray(users)) {
-    await writeJson(USERS_FILE, []);
-  }
-
-  const chain = await safeReadJson(CHAIN_FILE, null);
-  if (!Array.isArray(chain) || !chain.length) {
-    await writeJson(CHAIN_FILE, [createGenesisBlock()]);
-  }
-};
-
-const readUsers = () => safeReadJson(USERS_FILE, []);
-const writeUsers = (users) => writeJson(USERS_FILE, users);
-
-const readChain = () => safeReadJson(CHAIN_FILE, [createGenesisBlock()]);
-const writeChain = (chain) => writeJson(CHAIN_FILE, chain);
 
 const toPublicUser = (user) => ({
   id: user.id,
   name: user.name,
   email: user.email,
-  walletAddress: user.walletAddress,
-  createdAt: user.createdAt,
-  lastLoginAt: user.lastLoginAt,
+  walletAddress: user.wallet_address,
+  createdAt: toIso(user.created_at),
+  lastLoginAt: toIso(user.last_login_at),
+});
+
+const toChainBlock = (row) => ({
+  index: row.block_index,
+  timestamp: row.block_timestamp,
+  eventType: row.event_type,
+  payload: row.payload,
+  previousHash: row.previous_hash,
+  nonce: row.nonce,
+  hash: row.hash,
 });
 
 const createToken = (user) =>
@@ -113,29 +88,78 @@ const createToken = (user) =>
       sub: user.id,
       email: user.email,
       name: user.name,
-      walletAddress: user.walletAddress || null,
+      walletAddress: user.wallet_address || null,
     },
     JWT_SECRET,
     { expiresIn: TOKEN_EXPIRY }
   );
 
-const appendAuthBlock = async (eventType, payload) => {
-  const chain = await readChain();
-  const previous = chain[chain.length - 1];
+const getChainBlocks = async () => {
+  const result = await query('SELECT * FROM chain_blocks ORDER BY block_index ASC');
+  return result.rows.map(toChainBlock);
+};
 
-  const blockBase = {
-    index: chain.length,
-    timestamp: new Date().toISOString(),
-    eventType,
-    payload,
-    previousHash: previous.hash,
-    nonce: 0,
-  };
+const ensureGenesisBlock = async () => {
+  const countResult = await query('SELECT COUNT(*)::int AS count FROM chain_blocks');
+  const count = countResult.rows[0]?.count || 0;
+  if (count > 0) return;
 
-  const block = { ...blockBase, hash: hashBlock(blockBase) };
-  chain.push(block);
-  await writeChain(chain);
-  return block;
+  const genesis = createGenesisBlock();
+  await query(
+    `
+      INSERT INTO chain_blocks
+      (block_index, block_timestamp, event_type, payload, previous_hash, nonce, hash)
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+    `,
+    [
+      genesis.index,
+      genesis.timestamp,
+      genesis.eventType,
+      JSON.stringify(genesis.payload),
+      genesis.previousHash,
+      genesis.nonce,
+      genesis.hash,
+    ]
+  );
+};
+
+const appendChainBlock = async (eventType, payload) => {
+  return withTransaction(async (client) => {
+    const latestResult = await client.query(
+      'SELECT block_index, hash FROM chain_blocks ORDER BY block_index DESC LIMIT 1 FOR UPDATE'
+    );
+    const latest = latestResult.rows[0];
+
+    const blockBase = {
+      index: latest ? Number(latest.block_index) + 1 : 0,
+      timestamp: new Date().toISOString(),
+      eventType,
+      payload,
+      previousHash: latest ? latest.hash : '0',
+      nonce: 0,
+    };
+    const hash = hashBlock(blockBase);
+
+    const insertResult = await client.query(
+      `
+        INSERT INTO chain_blocks
+        (block_index, block_timestamp, event_type, payload, previous_hash, nonce, hash)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)
+        RETURNING *
+      `,
+      [
+        blockBase.index,
+        blockBase.timestamp,
+        blockBase.eventType,
+        JSON.stringify(blockBase.payload),
+        blockBase.previousHash,
+        blockBase.nonce,
+        hash,
+      ]
+    );
+
+    return toChainBlock(insertResult.rows[0]);
+  });
 };
 
 const verifyChainIntegrity = (chain) => {
@@ -246,17 +270,31 @@ const authMiddleware = (req, res, next) => {
     const payload = jwt.verify(token, JWT_SECRET);
     req.auth = payload;
     next();
-  } catch (error) {
+  } catch (_error) {
     res.status(401).json({ message: 'Invalid or expired token' });
   }
 };
 
+const readOptionalUserId = (req) => {
+  const header = req.headers.authorization || '';
+  const [scheme, token] = header.split(' ');
+  if (scheme !== 'Bearer' || !token) return null;
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    return payload?.sub || null;
+  } catch (_error) {
+    return null;
+  }
+};
+
 app.get('/api/health', async (_req, res) => {
-  const chain = await readChain();
+  const chain = await getChainBlocks();
   const integrity = verifyChainIntegrity(chain);
   res.json({
     status: 'ok',
     service: 'root-auth-api',
+    persistence: 'postgresql',
     blockchainIntegrity: integrity.valid,
     totalBlocks: chain.length,
   });
@@ -270,6 +308,8 @@ app.post('/api/agri/insights', async (req, res) => {
     const lat = Number(coords[0]);
     const lng = Number(coords[1]);
     const ndviMean = Number(ndviStats.mean);
+    const ndviMin = Number(ndviStats.min);
+    const ndviMax = Number(ndviStats.max);
 
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
       res.status(400).json({ message: 'Valid coords [lat, lng] are required.' });
@@ -311,15 +351,58 @@ app.post('/api/agri/insights', async (req, res) => {
       minTempAvg,
     });
 
-    const block = await appendAuthBlock('AGRI_INSIGHT_GENERATED', {
+    const userId = readOptionalUserId(req);
+    const block = await appendChainBlock('AGRI_INSIGHT_GENERATED', {
+      userId,
       lat: Number(lat.toFixed(5)),
       lng: Number(lng.toFixed(5)),
       ndviMean: Number(ndviMean.toFixed(4)),
       topCrop: insight.recommendedCrops[0]?.name || null,
     });
 
+    const insightId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+
+    await query(
+      `
+        INSERT INTO agri_insights (
+          id, user_id, latitude, longitude, ndvi_mean, ndvi_min, ndvi_max,
+          rainfall_7d, max_temp_avg, min_temp_avg,
+          summary, recommended_crops, irrigation, risks, input_payload,
+          created_at, ledger_block_index, ledger_block_hash
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6, $7,
+          $8, $9, $10,
+          $11, $12::jsonb, $13, $14::jsonb, $15::jsonb,
+          $16, $17, $18
+        )
+      `,
+      [
+        insightId,
+        userId,
+        lat,
+        lng,
+        ndviMean,
+        Number.isFinite(ndviMin) ? ndviMin : null,
+        Number.isFinite(ndviMax) ? ndviMax : null,
+        rainfall7d,
+        maxTempAvg,
+        minTempAvg,
+        insight.summary,
+        JSON.stringify(insight.recommendedCrops),
+        insight.irrigation,
+        JSON.stringify(insight.risks),
+        JSON.stringify(req.body || {}),
+        createdAt,
+        block.index,
+        block.hash,
+      ]
+    );
+
     res.json({
-      generatedAt: new Date().toISOString(),
+      id: insightId,
+      generatedAt: createdAt,
       weather: {
         rainfall7d: Number(rainfall7d.toFixed(2)),
         maxTempAvg: Number(maxTempAvg.toFixed(2)),
@@ -327,8 +410,8 @@ app.post('/api/agri/insights', async (req, res) => {
       },
       ndvi: {
         mean: Number(ndviMean.toFixed(4)),
-        min: Number.isFinite(Number(ndviStats.min)) ? Number(Number(ndviStats.min).toFixed(4)) : null,
-        max: Number.isFinite(Number(ndviStats.max)) ? Number(Number(ndviStats.max).toFixed(4)) : null,
+        min: Number.isFinite(ndviMin) ? Number(ndviMin.toFixed(4)) : null,
+        max: Number.isFinite(ndviMax) ? Number(ndviMax.toFixed(4)) : null,
       },
       ...insight,
       ledgerBlock: {
@@ -340,6 +423,53 @@ app.post('/api/agri/insights', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: 'Failed to generate agricultural insights.', error: error.message });
+  }
+});
+
+app.get('/api/agri/insights/history', authMiddleware, async (req, res) => {
+  try {
+    const result = await query(
+      `
+        SELECT
+          id, latitude, longitude, ndvi_mean, ndvi_min, ndvi_max,
+          rainfall_7d, max_temp_avg, min_temp_avg, summary,
+          recommended_crops, irrigation, risks, created_at,
+          ledger_block_index, ledger_block_hash
+        FROM agri_insights
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        LIMIT 50
+      `,
+      [req.auth.sub]
+    );
+
+    const items = result.rows.map((row) => ({
+      id: row.id,
+      coords: [row.latitude, row.longitude],
+      ndvi: {
+        mean: row.ndvi_mean,
+        min: row.ndvi_min,
+        max: row.ndvi_max,
+      },
+      weather: {
+        rainfall7d: row.rainfall_7d,
+        maxTempAvg: row.max_temp_avg,
+        minTempAvg: row.min_temp_avg,
+      },
+      summary: row.summary,
+      recommendedCrops: row.recommended_crops,
+      irrigation: row.irrigation,
+      risks: row.risks,
+      createdAt: toIso(row.created_at),
+      ledgerBlock: {
+        index: row.ledger_block_index,
+        hash: row.ledger_block_hash,
+      },
+    }));
+
+    res.json({ items });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to fetch agricultural insights history.', error: error.message });
   }
 });
 
@@ -360,9 +490,8 @@ app.post('/api/auth/signup', async (req, res) => {
       return;
     }
 
-    const users = await readUsers();
-    const alreadyExists = users.some((user) => user.email === email);
-    if (alreadyExists) {
+    const existingResult = await query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email]);
+    if (existingResult.rows.length > 0) {
       res.status(409).json({ message: 'Email already registered.' });
       return;
     }
@@ -378,20 +507,48 @@ app.post('/api/auth/signup', async (req, res) => {
       lastLoginAt: null,
     };
 
-    users.push(newUser);
-    await writeUsers(users);
+    await query(
+      `
+        INSERT INTO users
+        (id, name, email, wallet_address, password_hash, created_at, last_login_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `,
+      [
+        newUser.id,
+        newUser.name,
+        newUser.email,
+        newUser.walletAddress,
+        newUser.passwordHash,
+        newUser.createdAt,
+        newUser.lastLoginAt,
+      ]
+    );
 
-    const block = await appendAuthBlock('USER_SIGNUP', {
+    const block = await appendChainBlock('USER_SIGNUP', {
       userId: newUser.id,
       email: newUser.email,
       walletAddress: newUser.walletAddress,
+      name: newUser.name,
     });
 
-    const token = createToken(newUser);
+    const token = createToken({
+      id: newUser.id,
+      email: newUser.email,
+      name: newUser.name,
+      wallet_address: newUser.walletAddress,
+    });
+
     res.status(201).json({
       message: 'Signup successful.',
       token,
-      user: toPublicUser(newUser),
+      user: {
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        walletAddress: newUser.walletAddress,
+        createdAt: newUser.createdAt,
+        lastLoginAt: newUser.lastLoginAt,
+      },
       ledgerBlock: {
         index: block.index,
         hash: block.hash,
@@ -414,32 +571,35 @@ app.post('/api/auth/login', async (req, res) => {
       return;
     }
 
-    const users = await readUsers();
-    const user = users.find((item) => item.email === email);
+    const userResult = await query('SELECT * FROM users WHERE email = $1 LIMIT 1', [email]);
+    const user = userResult.rows[0];
     if (!user) {
+      await appendChainBlock('USER_LOGIN_FAILED', { email, reason: 'invalid_credentials' });
       res.status(401).json({ message: 'Invalid email or password.' });
       return;
     }
 
-    const isValid = await bcrypt.compare(password, user.passwordHash);
+    const isValid = await bcrypt.compare(password, user.password_hash);
     if (!isValid) {
+      await appendChainBlock('USER_LOGIN_FAILED', { email, reason: 'invalid_credentials' });
       res.status(401).json({ message: 'Invalid email or password.' });
       return;
     }
 
-    user.lastLoginAt = new Date().toISOString();
-    await writeUsers(users);
+    const lastLoginAt = new Date().toISOString();
+    await query('UPDATE users SET last_login_at = $1 WHERE id = $2', [lastLoginAt, user.id]);
+    const updatedUser = { ...user, last_login_at: lastLoginAt };
 
-    const block = await appendAuthBlock('USER_LOGIN', {
+    const block = await appendChainBlock('USER_LOGIN', {
       userId: user.id,
       email: user.email,
     });
 
-    const token = createToken(user);
+    const token = createToken(updatedUser);
     res.json({
       message: 'Login successful.',
       token,
-      user: toPublicUser(user),
+      user: toPublicUser(updatedUser),
       ledgerBlock: {
         index: block.index,
         hash: block.hash,
@@ -453,8 +613,8 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.get('/api/auth/me', authMiddleware, async (req, res) => {
-  const users = await readUsers();
-  const user = users.find((item) => item.id === req.auth.sub);
+  const result = await query('SELECT * FROM users WHERE id = $1 LIMIT 1', [req.auth.sub]);
+  const user = result.rows[0];
 
   if (!user) {
     res.status(404).json({ message: 'User not found.' });
@@ -465,7 +625,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
 });
 
 app.get('/api/auth/chain/verify', async (_req, res) => {
-  const chain = await readChain();
+  const chain = await getChainBlocks();
   const integrity = verifyChainIntegrity(chain);
   const lastBlock = chain[chain.length - 1];
 
@@ -482,11 +642,18 @@ app.use((error, _req, res, _next) => {
   res.status(status).json({ message: error.message || 'Internal server error.' });
 });
 
-await ensureDataStore();
+await initDatabase();
+await ensureGenesisBlock();
 
 app.listen(PORT, () => {
   console.log(`Auth API running on http://127.0.0.1:${PORT}`);
+  console.log('Persistence: PostgreSQL');
   if (JWT_SECRET === 'replace-me-with-a-strong-secret') {
     console.warn('Using fallback JWT secret. Set JWT_SECRET in .env for production.');
   }
+});
+
+process.on('SIGINT', async () => {
+  await pool.end();
+  process.exit(0);
 });
