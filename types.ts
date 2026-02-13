@@ -10,6 +10,23 @@ export interface LandParcel {
   lastAnalysis?: string;
 }
 
+export type LayerId = 'RGB' | 'NDVI' | 'EVI' | 'NDWI';
+
+export interface LayerConfig {
+  id: LayerId;
+  name: string;
+  description: string;
+  colors: string[]; // Gradient colors for legend
+}
+
+export interface GeoStats {
+  min: number;
+  max: number;
+  mean: number;
+  stdDev: number;
+  histogram: { bin: string; count: number }[];
+}
+
 export interface AnalysisResult {
   suitabilityScore: number;
   landUse: string;
@@ -17,6 +34,7 @@ export interface AnalysisResult {
   risks: string[];
   soilTypeEstimation: string;
   summary: string;
+  geoStats?: Record<LayerId, GeoStats>;
 }
 
 export enum AppView {

@@ -1,8 +1,7 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Icons } from './Icons';
 import { analyzeLandData } from '../services/geminiService';
-import { AnalysisResult, LayerId, LayerConfig, GeoStats } from '../types';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 const PRESETS = [
   { id: 1, name: 'Agricultural Zone', url: 'https://images.unsplash.com/photo-1625246333195-58405079d378?q=80&w=1000&auto=format&fit=crop' },
@@ -10,23 +9,23 @@ const PRESETS = [
   { id: 3, name: 'Forest Reserve', url: 'https://images.unsplash.com/photo-1448375240586-dfd8d3f5d891?q=80&w=1000&auto=format&fit=crop' },
 ];
 
-const LAYERS: LayerConfig[] = [
+const LAYERS = [
     { id: 'RGB', name: 'True Color (RGB)', description: 'Standard satellite imagery', colors: [] },
     { id: 'NDVI', name: 'Vegetation (NDVI)', description: 'Normalized Difference Vegetation Index', colors: ['#d7191c', '#fdae61', '#ffffbf', '#a6d96a', '#1a9641'] },
     { id: 'EVI', name: 'Enhanced Veg (EVI)', description: 'Enhanced Vegetation Index', colors: ['#8c510a', '#d8b365', '#f6e8c3', '#c7eae5', '#5ab4ac', '#01665e'] },
     { id: 'NDWI', name: 'Water Mask (NDWI)', description: 'Normalized Difference Water Index', colors: ['#ffffbf', '#e0f3f8', '#91bfdb', '#4575b4'] }
 ];
 
-export const MapExplorer: React.FC = () => {
-  const [selectedImage, setSelectedImage] = useState<string>(PRESETS[0].url);
-  const [activeLayer, setActiveLayer] = useState<LayerId>('RGB');
+export const MapExplorer = () => {
+  const [selectedImage, setSelectedImage] = useState(PRESETS[0].url);
+  const [activeLayer, setActiveLayer] = useState('RGB');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [computedStats, setComputedStats] = useState<Record<LayerId, GeoStats> | null>(null);
+  const [result, setResult] = useState(null);
+  const [computedStats, setComputedStats] = useState(null);
   
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const originalImageRef = useRef<HTMLImageElement | null>(null);
+  const canvasRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const originalImageRef = useRef(null);
 
   // Load image into memory when selected
   useEffect(() => {
@@ -46,7 +45,7 @@ export const MapExplorer: React.FC = () => {
     }
   }, [activeLayer]);
 
-  const processLayer = (layer: LayerId) => {
+  const processLayer = (layer) => {
     const canvas = canvasRef.current;
     const img = originalImageRef.current;
     if (!canvas || !img) return;
@@ -65,7 +64,7 @@ export const MapExplorer: React.FC = () => {
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
-    const values: number[] = [];
+    const values = [];
 
     // Pixel manipulation loop
     for (let i = 0; i < data.length; i += 4) {
@@ -111,10 +110,10 @@ export const MapExplorer: React.FC = () => {
     setComputedStats(prev => ({
         ...prev,
         [layer]: stats
-    } as Record<LayerId, GeoStats>));
+    }));
   };
 
-  const calculateStats = (values: number[]): GeoStats => {
+  const calculateStats = (values) => {
       if (values.length === 0) return { min: 0, max: 0, mean: 0, stdDev: 0, histogram: [] };
       
       let sum = 0;
@@ -151,7 +150,7 @@ export const MapExplorer: React.FC = () => {
       return { min, max, mean, stdDev, histogram };
   };
 
-  const getColorForValue = (val: number, layer: LayerId): [number, number, number] => {
+  const getColorForValue = (val, layer) => {
       // Simple Red-Yellow-Green lerp for NDVI
       // Map -1..1 to 0..1
       const t = (val + 1) / 2;
@@ -190,14 +189,9 @@ export const MapExplorer: React.FC = () => {
     if (!originalImageRef.current) return;
     setIsProcessing(true);
 
-    // Ensure we have stats for all layers to give the AI a complete picture
-    // We quickly compute them without rendering to canvas for speed if needed, 
-    // but here we just ensure we at least have the current layer's stats.
-    // Ideally, we'd compute all. For MVP, we use the active layer stats or defaults.
-    
     const statsToUse = computedStats || {
-        NDVI: { min: 0, max: 0, mean: 0.4, stdDev: 0.1, histogram: [] } as GeoStats
-    } as Record<LayerId, GeoStats>;
+        NDVI: { min: 0, max: 0, mean: 0.4, stdDev: 0.1, histogram: [] }
+    };
 
     try {
         // Get base64 of original image

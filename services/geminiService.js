@@ -1,5 +1,4 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { AnalysisResult, GeoStats, LayerId } from "../types";
 
 const getClient = () => {
     const apiKey = process.env.API_KEY;
@@ -15,10 +14,10 @@ const getClient = () => {
  * hard data calculated by our "GEE" engine.
  */
 export const analyzeLandData = async (
-    base64Image: string, 
-    promptText: string,
-    computedStats: Record<LayerId, GeoStats>
-): Promise<AnalysisResult | null> => {
+    base64Image, 
+    promptText,
+    computedStats
+) => {
     try {
         const ai = getClient();
         
@@ -112,7 +111,7 @@ export const analyzeLandData = async (
     }
 };
 
-export const getGeneralInsights = async (query: string): Promise<string> => {
+export const getGeneralInsights = async (query) => {
     try {
         const ai = getClient();
         const response = await ai.models.generateContent({

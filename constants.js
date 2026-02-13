@@ -1,0 +1,6 @@
+export const AppView = {
+  DASHBOARD: 'DASHBOARD',
+  EXPLORER: 'EXPLORER',
+  RECORDS: 'RECORDS',
+  SETTINGS: 'SETTINGS'
+};
