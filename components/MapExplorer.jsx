@@ -2,6 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Icons } from './Icons';
 import { analyzeLandData } from '../services/geminiService';
 import { BarChart, Bar, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import L from "leaflet";
+import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
+import markerIcon from "leaflet/dist/images/marker-icon.png";
+import markerShadow from "leaflet/dist/images/marker-shadow.png";
+
+delete L.Icon.Default.prototype._getIconUrl;
+
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: markerIcon2x,
+  iconUrl: markerIcon,
+  shadowUrl: markerShadow,
+});
 
 const PRESETS = [
   { id: 1, name: 'Agricultural Zone', url: 'https://images.unsplash.com/photo-1625246333195-58405079d378?q=80&w=1000&auto=format&fit=crop' },

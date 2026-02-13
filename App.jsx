@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
-import { Sidebar } from './components/Sidebar';
-import { Dashboard } from './components/Dashboard';
-import { MapExplorer } from './components/MapExplorer';
-import { LandRecords } from './components/LandRecords';
-import { AppView } from './constants';
-import { Icons } from './components/Icons';
+import { Sidebar } from './components/Sidebar.jsx';
+import { Dashboard } from './components/Dashboard.jsx';
+import { MapExplorer } from './components/MapExplorer.jsx';
+import { LandRecords } from './components/LandRecords.jsx';
+import { AppView } from './constants.js';
+import { Icons } from './components/Icons.jsx';
 
 function App() {
   const [currentView, setCurrentView] = useState(AppView.DASHBOARD);
