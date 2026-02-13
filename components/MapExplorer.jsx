@@ -57,6 +57,7 @@ export const MapExplorer = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [result, setResult] = useState(null);
   const [computedStats, setComputedStats] = useState(null);
+  const [lastClickCoords, setLastClickCoords] = useState(null);
   
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -64,6 +65,30 @@ export const MapExplorer = () => {
   const overlayRef = useRef(null);
   const fileInputRef = useRef(null);
   const processedImageRef = useRef(null); // Keeps track of the image for analysis (hidden canvas)
+
+  const getTileUrlForLatLng = (latlng) => {
+      const map = mapInstanceRef.current;
+      const tileLayer = tileLayerRef.current;
+      if (!map || !tileLayer) return null;
+      const zoom = map.getZoom();
+      const tileSize = tileLayer.getTileSize();
+      const point = map.project(latlng, zoom);
+      const x = Math.floor(point.x / tileSize.x);
+      const y = Math.floor(point.y / tileSize.y);
+      return tileLayer.getTileUrl({ x, y, z: zoom });
+  };
+
+  const handleMapClick = (event) => {
+      if (!event?.latlng) return;
+      const { lat, lng } = event.latlng;
+      setLastClickCoords([lat, lng]);
+      setResult(null);
+
+      const tileUrl = getTileUrlForLatLng(event.latlng);
+      if (tileUrl) {
+          processImageStats(tileUrl);
+      }
+  };
 
   // Initialize Map
   useEffect(() => {
@@ -87,8 +112,10 @@ export const MapExplorer = () => {
 
     // Initial preset load
     loadPreset(PRESETS[0], map);
+    map.on('click', handleMapClick);
 
     return () => {
+      map.off('click', handleMapClick);
       map.remove();
       mapInstanceRef.current = null;
     };
@@ -153,6 +180,7 @@ export const MapExplorer = () => {
 
   // Hidden image processing for stats (similar to previous canvas logic)
   const processImageStats = (imageUrl) => {
+      if (!imageUrl) return;
       const img = new Image();
       img.crossOrigin = "Anonymous";
       img.src = imageUrl;
@@ -162,23 +190,32 @@ export const MapExplorer = () => {
           canvas.width = img.width;
           canvas.height = img.height;
           const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          
-          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          const data = imageData.data;
-          
-          // Calculate NDVI-like stats from RGB
-          const values = [];
-          for (let i = 0; i < data.length; i += 4) {
-             const r = data[i];
-             const g = data[i + 1];
-             // Simple synthetic NDVI: (G-R)/(G+R)
-             const val = (g - r) / (g + r + 0.001); 
-             values.push(Math.max(-1, Math.min(1, val)));
+          try {
+              ctx.drawImage(img, 0, 0);
+              
+              const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const data = imageData.data;
+              
+              // Calculate NDVI-like stats from RGB
+              const values = [];
+              for (let i = 0; i < data.length; i += 4) {
+                 const r = data[i];
+                 const g = data[i + 1];
+                 // Simple synthetic NDVI: (G-R)/(G+R)
+                 const val = (g - r) / (g + r + 0.001); 
+                 values.push(Math.max(-1, Math.min(1, val)));
+              }
+              
+              const stats = calculateStats(values);
+              setComputedStats(stats);
+          } catch (error) {
+              console.warn('NDVI calculation failed (tile CORS or canvas issue).', error);
+              setComputedStats(null);
           }
-          
-          const stats = calculateStats(values);
-          setComputedStats(stats);
+      };
+      img.onerror = () => {
+          console.warn('Failed to load imagery tile for NDVI calculation.');
+          setComputedStats(null);
       };
   };
 
@@ -207,6 +244,7 @@ export const MapExplorer = () => {
     setIsProcessing(true);
 
     const statsToUse = { NDVI: computedStats || { min: 0, max: 0, mean: 0.4, stdDev: 0.1, histogram: [] } };
+    const coordsForPrompt = lastClickCoords || selectedPreset.coords;
 
     try {
         const canvas = document.createElement('canvas');
@@ -218,7 +256,7 @@ export const MapExplorer = () => {
 
         const analysis = await analyzeLandData(
             base64,
-            `Analyze the land parcel located at ${selectedPreset.coords.join(', ')}.`,
+            `Analyze the land parcel located at ${coordsForPrompt.join(', ')}.`,
             statsToUse
         );
         
@@ -239,6 +277,9 @@ export const MapExplorer = () => {
                  <Icons.Map className="w-5 h-5 mr-2 text-brand-600" />
                  Map Inspector
              </h2>
+             <p className="text-xs text-slate-500 mb-4">
+                 Tip: click on the map to auto-calculate NDVI for that spot.
+             </p>
              
              {/* Base Layers */}
              <div className="mb-6">
@@ -367,9 +408,9 @@ export const MapExplorer = () => {
               <div className="text-xs font-bold text-slate-700 mb-2">Active Region</div>
               <div className="flex items-center gap-2">
                    <Icons.Map className="w-4 h-4 text-brand-600" />
-                   <span className="text-xs text-slate-600">{selectedPreset.name}</span>
+                   <span className="text-xs text-slate-600">{lastClickCoords ? 'Custom Location' : selectedPreset.name}</span>
                    <span className="text-[10px] text-slate-400 font-mono">
-                       {selectedPreset.coords[0].toFixed(2)}, {selectedPreset.coords[1].toFixed(2)}
+                       {(lastClickCoords?.[0] ?? selectedPreset.coords[0]).toFixed(2)}, {(lastClickCoords?.[1] ?? selectedPreset.coords[1]).toFixed(2)}
                    </span>
               </div>
           </div>
