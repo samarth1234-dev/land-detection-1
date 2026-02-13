@@ -40,8 +40,8 @@ export const Sidebar = ({ currentView, onChangeView, isOpen, setIsOpen, user, on
                 <Icons.Leaf className="h-5 w-5" />
               </span>
               <div>
-                <p className="font-display text-lg font-bold tracking-tight">TerraTrust AI</p>
-                <p className="text-[11px] text-slate-400">Land Intelligence Suite</p>
+                <p className="font-display text-lg font-bold tracking-tight">ROOT</p>
+                <p className="text-[11px] text-slate-400">Remote Observation & Ownership Tracker</p>
               </div>
             </div>
             <button
@@ -111,7 +111,7 @@ export const Sidebar = ({ currentView, onChangeView, isOpen, setIsOpen, user, on
                   </div>
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-white">{user?.name || 'Authenticated User'}</p>
-                    <p className="truncate text-xs text-slate-400">{user?.email || 'user@terratrust.local'}</p>
+                    <p className="truncate text-xs text-slate-400">{user?.email || 'user@root.local'}</p>
                   </div>
                 </div>
                 <Icons.Activity className="h-4 w-4 text-emerald-300" />

@@ -106,7 +106,7 @@ export const AuthScreen = ({ onAuthenticated }) => {
             Secure Access
           </p>
           <h1 className="mt-4 font-display text-4xl font-bold leading-tight text-slate-900">
-            Land & Property Intelligence Platform
+            ROOT (Remote Observation & Ownership Tracker)
           </h1>
           <p className="mt-4 max-w-xl text-sm leading-relaxed text-slate-600">
             AI-driven NDVI insights, map-based parcel validation, and blockchain-backed historical records for

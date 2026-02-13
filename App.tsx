@@ -51,7 +51,7 @@ function App() {
             >
               <Icons.Menu className="w-6 h-6" />
             </button>
-            <span className="ml-3 font-semibold text-slate-900">TerraTrust AI</span>
+            <span className="ml-3 font-semibold text-slate-900">ROOT</span>
           </div>
         </header>
 

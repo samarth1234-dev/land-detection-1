@@ -32,7 +32,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, isO
       `}>
         <div className="flex h-16 items-center px-6 border-b border-slate-800 bg-slate-900">
           <Icons.Leaf className="w-6 h-6 text-accent-500 mr-3" />
-          <span className="text-xl font-bold tracking-tight">TerraTrust AI</span>
+          <span className="text-xl font-bold tracking-tight">ROOT</span>
         </div>
 
         <nav className="flex-1 px-4 py-6 space-y-2">

@@ -1,4 +1,4 @@
-const AUTH_STORAGE_KEY = 'terratrust_auth_session_v1';
+const AUTH_STORAGE_KEY = 'root_auth_session_v1';
 
 const parseResponse = async (response) => {
   const text = await response.text();
