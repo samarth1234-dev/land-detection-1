@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Icons } from './Icons';
 import { analyzeLandData } from '../services/geminiService';
+import { fetchAgricultureInsights } from '../services/agriInsightsService.js';
 import { BarChart, Bar, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import L from "leaflet";
 import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
@@ -334,6 +335,8 @@ export const MapExplorer = () => {
   const [landClassification, setLandClassification] = useState(null);
   const [ndviSource, setNdviSource] = useState(null);
   const [ndviError, setNdviError] = useState('');
+  const [agriInsights, setAgriInsights] = useState(null);
+  const [agriError, setAgriError] = useState('');
   const [analysisImageBase64, setAnalysisImageBase64] = useState('');
 
   const mapContainerRef = useRef(null);
@@ -368,6 +371,8 @@ export const MapExplorer = () => {
     setLandClassification(null);
     setNdviSource(null);
     setNdviError('');
+    setAgriInsights(null);
+    setAgriError('');
     setAnalysisImageBase64('');
     clearSelectionRectangle();
   };
@@ -490,14 +495,29 @@ export const MapExplorer = () => {
     setLandClassification(null);
     setNdviSource(null);
     setNdviError('');
+    setAgriInsights(null);
+    setAgriError('');
     setAnalysisImageBase64('');
 
     try {
       const { stats, source } = await fetchTrueNdviStats(selectionBounds);
       setComputedStats(stats);
-      setLandClassification(classifyLandByNdvi(stats));
+      const classification = classifyLandByNdvi(stats);
+      setLandClassification(classification);
       setNdviSource(source);
       setAnalysisImageBase64(createAnalysisPlaceholderImage(stats.mean));
+
+      try {
+        const insights = await fetchAgricultureInsights({
+          coords: selectionBounds.center,
+          ndviStats: stats,
+        });
+        setAgriInsights(insights);
+        setAgriError('');
+      } catch (error) {
+        setAgriInsights(null);
+        setAgriError(error instanceof Error ? error.message : 'Failed to generate agricultural insights.');
+      }
     } catch (error) {
       console.warn('True NDVI processing failed.', error);
       const hint =
@@ -512,6 +532,8 @@ export const MapExplorer = () => {
       });
       setNdviSource(null);
       setNdviError(hint || (error instanceof Error ? error.message : 'Unknown NDVI error'));
+      setAgriInsights(null);
+      setAgriError('');
     } finally {
       setIsProcessing(false);
     }
@@ -531,6 +553,8 @@ export const MapExplorer = () => {
       setLandClassification(null);
       setNdviSource(null);
       setNdviError('');
+      setAgriInsights(null);
+      setAgriError('');
       setAnalysisImageBase64('');
       clearSelectionRectangle();
       return;
@@ -658,14 +682,20 @@ export const MapExplorer = () => {
     if (!computedStats) return;
     setIsProcessing(true);
 
-    const statsToUse = { NDVI: computedStats };
+    const statsToUse = {
+      NDVI: computedStats,
+      AGRI_WEATHER: agriInsights?.weather || null,
+    };
     const sourceText = ndviSource
       ? `Source: ${ndviSource.provider}, scene ${ndviSource.sceneId}, acquired ${formatDate(ndviSource.acquiredAt)}, cloud cover ${ndviSource.cloudCover.toFixed(1)}%.`
       : 'Source: NDVI dataset metadata unavailable.';
+    const agriText = agriInsights
+      ? `Agriculture summary: ${agriInsights.summary}. Top crop: ${agriInsights.recommendedCrops?.[0]?.name || 'NA'}. Irrigation: ${agriInsights.irrigation}.`
+      : '';
 
     const locationPrompt = selectedBounds
-      ? `Analyze land for selected parcel with corners NW ${formatCoord(selectedBounds.northWest)} and SE ${formatCoord(selectedBounds.southEast)}. ${sourceText}`
-      : `Analyze land parcel located at ${activeLocation.coords.join(', ')}. ${sourceText}`;
+      ? `Analyze land for selected parcel with corners NW ${formatCoord(selectedBounds.northWest)} and SE ${formatCoord(selectedBounds.southEast)}. ${sourceText} ${agriText}`
+      : `Analyze land parcel located at ${activeLocation.coords.join(', ')}. ${sourceText} ${agriText}`;
 
     try {
       const base64 = analysisImageBase64 || createAnalysisPlaceholderImage(computedStats.mean);
@@ -780,6 +810,37 @@ export const MapExplorer = () => {
               {landClassification.confidence > 0 && (
                 <p className="text-[11px] text-slate-500 mt-1">Confidence: {landClassification.confidence}%</p>
               )}
+            </div>
+          )}
+
+          {agriInsights && (
+            <div className="mb-6 p-3 rounded-lg border border-lime-100 bg-lime-50/60">
+              <p className="text-xs font-semibold text-lime-800">Agricultural Insights</p>
+              <p className="text-[11px] text-slate-700 mt-1">{agriInsights.summary}</p>
+              <p className="text-[11px] text-slate-700 mt-2">
+                Weather (7d): Rain {agriInsights.weather?.rainfall7d ?? 'NA'} mm, Max Temp {agriInsights.weather?.maxTempAvg ?? 'NA'} C
+              </p>
+              <p className="text-[11px] text-slate-700 mt-1">Irrigation: {agriInsights.irrigation}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {(agriInsights.recommendedCrops || []).map((crop) => (
+                  <span
+                    key={crop.name}
+                    className="inline-flex items-center rounded-full border border-lime-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-lime-800"
+                  >
+                    {crop.name} ({crop.suitability}%)
+                  </span>
+                ))}
+              </div>
+              {Array.isArray(agriInsights.risks) && agriInsights.risks.length > 0 && (
+                <p className="text-[11px] text-amber-700 mt-2">Risk: {agriInsights.risks[0]}</p>
+              )}
+            </div>
+          )}
+
+          {agriError && (
+            <div className="mb-6 p-3 rounded-lg border border-amber-100 bg-amber-50/70">
+              <p className="text-xs font-semibold text-amber-800">Agricultural Insights Error</p>
+              <p className="text-[11px] text-amber-700 mt-1 break-words">{agriError}</p>
             </div>
           )}
 

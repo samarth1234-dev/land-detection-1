@@ -55,7 +55,7 @@ const createGenesisBlock = () => {
     index: 0,
     timestamp: '2026-01-01T00:00:00.000Z',
     eventType: 'GENESIS',
-    payload: { note: 'TerraTrust auth chain initialized' },
+    payload: { note: 'ROOT auth chain initialized' },
     previousHash: '0',
     nonce: 0,
   };
@@ -166,6 +166,73 @@ const verifyChainIntegrity = (chain) => {
   return { valid: true, reason: null };
 };
 
+const clampNumber = (value, min, max) => Math.max(min, Math.min(max, value));
+
+const average = (values = []) => {
+  if (!Array.isArray(values) || !values.length) return 0;
+  const total = values.reduce((sum, value) => sum + Number(value || 0), 0);
+  return total / values.length;
+};
+
+const scoreWindow = (value, min, max, tolerance = 6) => {
+  if (value >= min && value <= max) return 1;
+  const distance = value < min ? min - value : value - max;
+  const score = 1 - distance / tolerance;
+  return clampNumber(score, 0, 1);
+};
+
+const deriveAgricultureInsights = ({ ndviMean, rainfall7d, maxTempAvg, minTempAvg }) => {
+  const cropModels = [
+    { name: 'Rice', ndvi: [0.35, 0.9], temp: [24, 34], rain: [25, 120] },
+    { name: 'Wheat', ndvi: [0.2, 0.75], temp: [14, 28], rain: [5, 45] },
+    { name: 'Maize', ndvi: [0.25, 0.85], temp: [18, 32], rain: [10, 70] },
+    { name: 'Millet', ndvi: [0.1, 0.65], temp: [20, 36], rain: [0, 35] },
+    { name: 'Pulses', ndvi: [0.18, 0.7], temp: [18, 32], rain: [5, 55] },
+  ];
+
+  const recommendedCrops = cropModels
+    .map((crop) => {
+      const ndviScore = scoreWindow(ndviMean, crop.ndvi[0], crop.ndvi[1], 0.3);
+      const tempScore = scoreWindow(maxTempAvg, crop.temp[0], crop.temp[1], 8);
+      const rainScore = scoreWindow(rainfall7d, crop.rain[0], crop.rain[1], 35);
+      const totalScore = Math.round((ndviScore * 0.5 + tempScore * 0.3 + rainScore * 0.2) * 100);
+
+      return {
+        name: crop.name,
+        suitability: totalScore,
+      };
+    })
+    .sort((a, b) => b.suitability - a.suitability)
+    .slice(0, 3);
+
+  let irrigation = 'Low irrigation need (~5-10 mm/week).';
+  if (rainfall7d < 15 && maxTempAvg >= 30) {
+    irrigation = 'High irrigation need (~25-35 mm/week).';
+  } else if (rainfall7d < 30) {
+    irrigation = 'Moderate irrigation need (~15-25 mm/week).';
+  }
+
+  const risks = [];
+  if (rainfall7d < 10) risks.push('Dry spell risk in next 7 days');
+  if (maxTempAvg > 34) risks.push('Heat stress risk for sensitive crops');
+  if (ndviMean < 0.18) risks.push('Low vegetation vigor; consider soil conditioning');
+  if (minTempAvg < 10) risks.push('Night-time cold stress possible');
+  if (!risks.length) risks.push('No major short-term agricultural risk detected');
+
+  const vegetationCondition =
+    ndviMean >= 0.45 ? 'Healthy dense vegetation' :
+    ndviMean >= 0.25 ? 'Moderate active vegetation' :
+    ndviMean >= 0.1 ? 'Sparse vegetation' :
+    'Very low vegetation cover';
+
+  return {
+    summary: `${vegetationCondition}. Weekly rainfall ${rainfall7d.toFixed(1)} mm, avg max temp ${maxTempAvg.toFixed(1)} C.`,
+    recommendedCrops,
+    irrigation,
+    risks,
+  };
+};
+
 const authMiddleware = (req, res, next) => {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
@@ -189,10 +256,91 @@ app.get('/api/health', async (_req, res) => {
   const integrity = verifyChainIntegrity(chain);
   res.json({
     status: 'ok',
-    service: 'terratrust-auth-api',
+    service: 'root-auth-api',
     blockchainIntegrity: integrity.valid,
     totalBlocks: chain.length,
   });
+});
+
+app.post('/api/agri/insights', async (req, res) => {
+  try {
+    const coords = Array.isArray(req.body?.coords) ? req.body.coords : [];
+    const ndviStats = req.body?.ndviStats || {};
+
+    const lat = Number(coords[0]);
+    const lng = Number(coords[1]);
+    const ndviMean = Number(ndviStats.mean);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      res.status(400).json({ message: 'Valid coords [lat, lng] are required.' });
+      return;
+    }
+
+    if (!Number.isFinite(ndviMean)) {
+      res.status(400).json({ message: 'Valid ndviStats.mean is required.' });
+      return;
+    }
+
+    const weatherUrl = new URL('https://api.open-meteo.com/v1/forecast');
+    weatherUrl.searchParams.set('latitude', String(lat));
+    weatherUrl.searchParams.set('longitude', String(lng));
+    weatherUrl.searchParams.set('daily', 'temperature_2m_max,temperature_2m_min,precipitation_sum');
+    weatherUrl.searchParams.set('forecast_days', '7');
+    weatherUrl.searchParams.set('timezone', 'auto');
+
+    const weatherResponse = await fetch(weatherUrl);
+    if (!weatherResponse.ok) {
+      const message = await weatherResponse.text();
+      throw new Error(`Weather API failed: ${message || weatherResponse.status}`);
+    }
+
+    const weatherPayload = await weatherResponse.json();
+    const daily = weatherPayload?.daily || {};
+    const maxTemps = Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max : [];
+    const minTemps = Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min : [];
+    const precipitation = Array.isArray(daily.precipitation_sum) ? daily.precipitation_sum : [];
+
+    const maxTempAvg = average(maxTemps);
+    const minTempAvg = average(minTemps);
+    const rainfall7d = precipitation.reduce((sum, value) => sum + Number(value || 0), 0);
+
+    const insight = deriveAgricultureInsights({
+      ndviMean,
+      rainfall7d,
+      maxTempAvg,
+      minTempAvg,
+    });
+
+    const block = await appendAuthBlock('AGRI_INSIGHT_GENERATED', {
+      lat: Number(lat.toFixed(5)),
+      lng: Number(lng.toFixed(5)),
+      ndviMean: Number(ndviMean.toFixed(4)),
+      topCrop: insight.recommendedCrops[0]?.name || null,
+    });
+
+    res.json({
+      generatedAt: new Date().toISOString(),
+      weather: {
+        rainfall7d: Number(rainfall7d.toFixed(2)),
+        maxTempAvg: Number(maxTempAvg.toFixed(2)),
+        minTempAvg: Number(minTempAvg.toFixed(2)),
+      },
+      ndvi: {
+        mean: Number(ndviMean.toFixed(4)),
+        min: Number.isFinite(Number(ndviStats.min)) ? Number(Number(ndviStats.min).toFixed(4)) : null,
+        max: Number.isFinite(Number(ndviStats.max)) ? Number(Number(ndviStats.max).toFixed(4)) : null,
+      },
+      ...insight,
+      ledgerBlock: {
+        index: block.index,
+        hash: block.hash,
+        eventType: block.eventType,
+        timestamp: block.timestamp,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to generate agricultural insights.', error: error.message });
+  }
 });
 
 app.post('/api/auth/signup', async (req, res) => {
