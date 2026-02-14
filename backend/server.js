@@ -945,7 +945,6 @@ const fetchEarthSearchScene = async ({ polygon, datetime }) => {
     body: JSON.stringify({
       collections: ['sentinel-2-l2a', 'sentinel-2-c1-l2a'],
       intersects: geometry,
-      bbox: buildBboxFromPolygon(polygon),
       datetime,
       limit: 35,
     }),
