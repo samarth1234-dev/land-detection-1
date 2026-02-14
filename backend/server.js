@@ -35,6 +35,15 @@ app.use(
 );
 
 let databaseReady = false;
+const USER_ROLES = new Set(['USER', 'EMPLOYEE']);
+const EMPLOYEE_SIGNUP_CODE = String(process.env.EMPLOYEE_SIGNUP_CODE || '').trim();
+
+const normalizeRole = (value) => {
+  const role = String(value || '').trim().toUpperCase();
+  return USER_ROLES.has(role) ? role : 'USER';
+};
+
+const isEmployeeAuth = (auth) => normalizeRole(auth?.role) === 'EMPLOYEE';
 
 const hashBlock = (block) =>
   crypto
@@ -69,6 +78,7 @@ const toPublicUser = (user) => ({
   id: user.id,
   name: user.name,
   email: user.email,
+  role: normalizeRole(user.role),
   walletAddress: user.wallet_address,
   createdAt: toIso(user.created_at),
   lastLoginAt: toIso(user.last_login_at),
@@ -90,6 +100,7 @@ const createToken = (user) =>
       sub: user.id,
       email: user.email,
       name: user.name,
+      role: normalizeRole(user.role),
       walletAddress: user.wallet_address || null,
     },
     JWT_SECRET,
@@ -392,6 +403,14 @@ const toDisputeRecord = (row) => {
     updatedAt: toIso(row.updated_at),
     resolvedAt: toIso(row.resolved_at),
     snapshotHash,
+    reporter: row.user_id
+      ? {
+          id: row.user_id,
+          name: row.user_name || 'Unknown user',
+          email: row.user_email || null,
+          role: normalizeRole(row.user_role),
+        }
+      : null,
     ledgerBlock: {
       index: row.ledger_block_index,
       hash: row.ledger_block_hash,
@@ -410,11 +429,22 @@ const authMiddleware = (req, res, next) => {
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.auth = payload;
+    req.auth = {
+      ...payload,
+      role: normalizeRole(payload?.role),
+    };
     next();
   } catch (_error) {
     res.status(401).json({ message: 'Invalid or expired token' });
   }
+};
+
+const requireEmployee = (req, res, next) => {
+  if (!isEmployeeAuth(req.auth)) {
+    res.status(403).json({ message: 'Government employee access required.' });
+    return;
+  }
+  next();
 };
 
 const readOptionalUserId = (req) => {
@@ -667,19 +697,29 @@ app.post('/api/agri/insights', async (req, res) => {
 
 app.get('/api/agri/insights/history', authMiddleware, async (req, res) => {
   try {
+    const includeAll = isEmployeeAuth(req.auth);
+    const params = [];
+    const whereClause = includeAll ? '' : 'WHERE ai.user_id = $1';
+    if (!includeAll) params.push(req.auth.sub);
+
     const result = await query(
       `
         SELECT
-          id, latitude, longitude, ndvi_mean, ndvi_min, ndvi_max,
-          rainfall_7d, max_temp_avg, min_temp_avg, summary,
-          recommended_crops, irrigation, risks, created_at,
-          ledger_block_index, ledger_block_hash
-        FROM agri_insights
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        LIMIT 50
+          ai.id,
+          ai.latitude, ai.longitude, ai.ndvi_mean, ai.ndvi_min, ai.ndvi_max,
+          ai.rainfall_7d, ai.max_temp_avg, ai.min_temp_avg, ai.summary,
+          ai.recommended_crops, ai.irrigation, ai.risks, ai.created_at,
+          ai.ledger_block_index, ai.ledger_block_hash,
+          ai.user_id,
+          u.name AS user_name,
+          u.email AS user_email
+        FROM agri_insights ai
+        LEFT JOIN users u ON u.id = ai.user_id
+        ${whereClause}
+        ORDER BY ai.created_at DESC
+        LIMIT ${includeAll ? 200 : 50}
       `,
-      [req.auth.sub]
+      params
     );
 
     const items = result.rows.map((row) => ({
@@ -704,9 +744,19 @@ app.get('/api/agri/insights/history', authMiddleware, async (req, res) => {
         index: row.ledger_block_index,
         hash: row.ledger_block_hash,
       },
+      user: row.user_id
+        ? {
+            id: row.user_id,
+            name: row.user_name || 'Unknown user',
+            email: row.user_email || null,
+          }
+        : null,
     }));
 
-    res.json({ items });
+    res.json({
+      scope: includeAll ? 'GLOBAL' : 'USER',
+      items,
+    });
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch agricultural insights history.', error: error.message });
   }
@@ -714,6 +764,11 @@ app.get('/api/agri/insights/history', authMiddleware, async (req, res) => {
 
 app.get('/api/disputes/summary', authMiddleware, async (req, res) => {
   try {
+    const includeAll = isEmployeeAuth(req.auth);
+    const params = [];
+    const whereClause = includeAll ? '' : 'WHERE user_id = $1';
+    if (!includeAll) params.push(req.auth.sub);
+
     const result = await query(
       `
         SELECT
@@ -724,18 +779,21 @@ app.get('/api/disputes/summary', authMiddleware, async (req, res) => {
           COUNT(*) FILTER (WHERE status = 'REJECTED')::int AS rejected,
           COUNT(*) FILTER (WHERE priority IN ('HIGH', 'CRITICAL') AND status IN ('OPEN', 'IN_REVIEW'))::int AS urgent_open
         FROM land_disputes
-        WHERE user_id = $1
+        ${whereClause}
       `,
-      [req.auth.sub]
+      params
     );
 
-    res.json(result.rows[0] || {
-      total: 0,
-      open: 0,
-      in_review: 0,
-      resolved: 0,
-      rejected: 0,
-      urgent_open: 0,
+    res.json({
+      scope: includeAll ? 'GLOBAL' : 'USER',
+      ...(result.rows[0] || {
+        total: 0,
+        open: 0,
+        in_review: 0,
+        resolved: 0,
+        rejected: 0,
+        urgent_open: 0,
+      }),
     });
   } catch (error) {
     res.status(500).json({ message: 'Failed to load dispute summary.', error: error.message });
@@ -745,34 +803,48 @@ app.get('/api/disputes/summary', authMiddleware, async (req, res) => {
 app.get('/api/disputes', authMiddleware, async (req, res) => {
   try {
     const statusFilter = req.query?.status ? normalizeToken(req.query.status) : '';
+    const scope = String(req.query?.scope || '').trim().toLowerCase();
+    const includeAll = isEmployeeAuth(req.auth) && scope !== 'mine';
     if (statusFilter && !DISPUTE_STATUSES.has(statusFilter)) {
       res.status(400).json({ message: `Invalid status filter. Allowed: ${Array.from(DISPUTE_STATUSES).join(', ')}` });
       return;
     }
 
-    const params = [req.auth.sub];
-    let whereClause = 'WHERE user_id = $1';
+    const params = [];
+    const whereParts = [];
+    if (!includeAll) {
+      params.push(req.auth.sub);
+      whereParts.push(`ld.user_id = $${params.length}`);
+    }
     if (statusFilter) {
       params.push(statusFilter);
-      whereClause += ` AND status = $${params.length}`;
+      whereParts.push(`ld.status = $${params.length}`);
     }
+    const whereClause = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
 
     const result = await query(
       `
         SELECT
-          id, parcel_ref, dispute_type, description, latitude, longitude, selection_bounds,
-          status, priority, evidence_urls, resolution_note,
-          created_at, updated_at, resolved_at,
-          ledger_block_index, ledger_block_hash
-        FROM land_disputes
+          ld.id, ld.user_id, ld.parcel_ref, ld.dispute_type, ld.description, ld.latitude, ld.longitude, ld.selection_bounds,
+          ld.status, ld.priority, ld.evidence_urls, ld.resolution_note,
+          ld.created_at, ld.updated_at, ld.resolved_at,
+          ld.ledger_block_index, ld.ledger_block_hash,
+          u.name AS user_name,
+          u.email AS user_email,
+          u.role AS user_role
+        FROM land_disputes ld
+        LEFT JOIN users u ON u.id = ld.user_id
         ${whereClause}
-        ORDER BY updated_at DESC
+        ORDER BY ld.updated_at DESC
         LIMIT 100
       `,
       params
     );
 
-    res.json({ items: result.rows.map(toDisputeRecord) });
+    res.json({
+      scope: includeAll ? 'GLOBAL' : 'USER',
+      items: result.rows.map(toDisputeRecord),
+    });
   } catch (error) {
     res.status(500).json({ message: 'Failed to fetch land disputes.', error: error.message });
   }
@@ -843,6 +915,7 @@ app.post('/api/disputes', authMiddleware, async (req, res) => {
 
       const block = await insertChainBlock(client, 'LAND_DISPUTE_CREATED', {
         userId: req.auth.sub,
+        actorRole: normalizeRole(req.auth.role),
         disputeId: id,
         parcelRef,
         disputeType,
@@ -934,6 +1007,7 @@ app.patch('/api/disputes/:id/status', authMiddleware, async (req, res) => {
     const disputeId = String(req.params.id || '').trim();
     const nextStatus = normalizeToken(req.body?.status);
     const note = String(req.body?.note || '').trim();
+    const includeAll = isEmployeeAuth(req.auth);
 
     if (!disputeId) {
       res.status(400).json({ message: 'Dispute id is required.' });
@@ -945,10 +1019,15 @@ app.patch('/api/disputes/:id/status', authMiddleware, async (req, res) => {
     }
 
     const payload = await withTransaction(async (client) => {
-      const currentResult = await client.query(
-        'SELECT * FROM land_disputes WHERE id = $1 AND user_id = $2 LIMIT 1 FOR UPDATE',
-        [disputeId, req.auth.sub]
-      );
+      const currentResult = includeAll
+        ? await client.query(
+            'SELECT * FROM land_disputes WHERE id = $1 LIMIT 1 FOR UPDATE',
+            [disputeId]
+          )
+        : await client.query(
+            'SELECT * FROM land_disputes WHERE id = $1 AND user_id = $2 LIMIT 1 FOR UPDATE',
+            [disputeId, req.auth.sub]
+          );
       const current = currentResult.rows[0];
       if (!current) return null;
       if (current.status === nextStatus) {
@@ -973,6 +1052,8 @@ app.patch('/api/disputes/:id/status', authMiddleware, async (req, res) => {
 
       const block = await insertChainBlock(client, 'LAND_DISPUTE_STATUS_UPDATED', {
         userId: req.auth.sub,
+        actorRole: normalizeRole(req.auth.role),
+        disputeOwnerId: current.user_id || null,
         disputeId,
         fromStatus: current.status,
         toStatus: nextStatus,
@@ -1049,15 +1130,21 @@ app.patch('/api/disputes/:id/status', authMiddleware, async (req, res) => {
 app.get('/api/disputes/:id/ledger/verify', authMiddleware, async (req, res) => {
   try {
     const disputeId = String(req.params.id || '').trim();
+    const includeAll = isEmployeeAuth(req.auth);
     if (!disputeId) {
       res.status(400).json({ message: 'Dispute id is required.' });
       return;
     }
 
-    const disputeResult = await query(
-      'SELECT * FROM land_disputes WHERE id = $1 AND user_id = $2 LIMIT 1',
-      [disputeId, req.auth.sub]
-    );
+    const disputeResult = includeAll
+      ? await query(
+          'SELECT * FROM land_disputes WHERE id = $1 LIMIT 1',
+          [disputeId]
+        )
+      : await query(
+          'SELECT * FROM land_disputes WHERE id = $1 AND user_id = $2 LIMIT 1',
+          [disputeId, req.auth.sub]
+        );
     const dispute = disputeResult.rows[0];
     if (!dispute) {
       res.status(404).json({ message: 'Dispute not found.' });
@@ -1136,12 +1223,110 @@ app.get('/api/disputes/:id/ledger/verify', authMiddleware, async (req, res) => {
   }
 });
 
+app.get('/api/analytics/overview', authMiddleware, requireEmployee, async (_req, res) => {
+  try {
+    const [usersResult, insightsResult, disputesResult, cropsResult, vigorResult] = await Promise.all([
+      query(`
+        SELECT
+          COUNT(*)::int AS total_users,
+          COUNT(*) FILTER (WHERE role = 'EMPLOYEE')::int AS employee_users,
+          COUNT(*) FILTER (WHERE role = 'USER')::int AS citizen_users
+        FROM users
+      `),
+      query(`
+        SELECT
+          COUNT(*)::int AS total_insights,
+          COALESCE(AVG(ndvi_mean), 0)::double precision AS avg_ndvi,
+          COALESCE(AVG(rainfall_7d), 0)::double precision AS avg_rainfall_7d,
+          COALESCE(AVG(max_temp_avg), 0)::double precision AS avg_max_temp,
+          COALESCE(AVG(min_temp_avg), 0)::double precision AS avg_min_temp
+        FROM agri_insights
+      `),
+      query(`
+        SELECT
+          COUNT(*)::int AS total_disputes,
+          COUNT(*) FILTER (WHERE status = 'OPEN')::int AS open_disputes,
+          COUNT(*) FILTER (WHERE status = 'IN_REVIEW')::int AS in_review_disputes,
+          COUNT(*) FILTER (WHERE status = 'RESOLVED')::int AS resolved_disputes,
+          COUNT(*) FILTER (WHERE status = 'REJECTED')::int AS rejected_disputes,
+          COALESCE(
+            AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600)
+              FILTER (WHERE resolved_at IS NOT NULL),
+            0
+          )::double precision AS avg_resolution_hours
+        FROM land_disputes
+      `),
+      query(`
+        SELECT
+          recommended_crops->0->>'name' AS crop_name,
+          COUNT(*)::int AS count
+        FROM agri_insights
+        WHERE recommended_crops->0->>'name' IS NOT NULL
+        GROUP BY recommended_crops->0->>'name'
+        ORDER BY count DESC
+        LIMIT 5
+      `),
+      query(`
+        SELECT
+          COUNT(*) FILTER (WHERE ndvi_mean >= 0.45)::int AS dense_vegetation,
+          COUNT(*) FILTER (WHERE ndvi_mean >= 0.25 AND ndvi_mean < 0.45)::int AS active_cropland,
+          COUNT(*) FILTER (WHERE ndvi_mean >= 0.1 AND ndvi_mean < 0.25)::int AS sparse_vegetation,
+          COUNT(*) FILTER (WHERE ndvi_mean < 0.1)::int AS barren_or_water
+        FROM agri_insights
+      `),
+    ]);
+
+    const users = usersResult.rows[0] || {};
+    const insights = insightsResult.rows[0] || {};
+    const disputes = disputesResult.rows[0] || {};
+    const vigor = vigorResult.rows[0] || {};
+
+    res.json({
+      users: {
+        total: Number(users.total_users || 0),
+        citizens: Number(users.citizen_users || 0),
+        employees: Number(users.employee_users || 0),
+      },
+      insights: {
+        total: Number(insights.total_insights || 0),
+        avgNdvi: Number(insights.avg_ndvi || 0),
+        avgRainfall7d: Number(insights.avg_rainfall_7d || 0),
+        avgMaxTemp: Number(insights.avg_max_temp || 0),
+        avgMinTemp: Number(insights.avg_min_temp || 0),
+        vegetationMix: {
+          denseVegetation: Number(vigor.dense_vegetation || 0),
+          activeCropland: Number(vigor.active_cropland || 0),
+          sparseVegetation: Number(vigor.sparse_vegetation || 0),
+          barrenOrWater: Number(vigor.barren_or_water || 0),
+        },
+      },
+      disputes: {
+        total: Number(disputes.total_disputes || 0),
+        open: Number(disputes.open_disputes || 0),
+        inReview: Number(disputes.in_review_disputes || 0),
+        resolved: Number(disputes.resolved_disputes || 0),
+        rejected: Number(disputes.rejected_disputes || 0),
+        avgResolutionHours: Number(disputes.avg_resolution_hours || 0),
+      },
+      topCrops: cropsResult.rows.map((row) => ({
+        name: row.crop_name,
+        count: Number(row.count || 0),
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load governance analytics.', error: error.message });
+  }
+});
+
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const name = String(req.body?.name || '').trim();
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
     const walletAddress = String(req.body?.walletAddress || '').trim();
+    const requestedRole = normalizeRole(req.body?.role);
+    const employeeAccessCode = String(req.body?.employeeAccessCode || '').trim();
+    const role = requestedRole === 'EMPLOYEE' ? 'EMPLOYEE' : 'USER';
 
     if (!name || !email || !password) {
       res.status(400).json({ message: 'Name, email, and password are required.' });
@@ -1150,6 +1335,11 @@ app.post('/api/auth/signup', async (req, res) => {
 
     if (password.length < 6) {
       res.status(400).json({ message: 'Password must be at least 6 characters.' });
+      return;
+    }
+
+    if (role === 'EMPLOYEE' && EMPLOYEE_SIGNUP_CODE && employeeAccessCode !== EMPLOYEE_SIGNUP_CODE) {
+      res.status(403).json({ message: 'Invalid government employee access code.' });
       return;
     }
 
@@ -1164,6 +1354,7 @@ app.post('/api/auth/signup', async (req, res) => {
       id: crypto.randomUUID(),
       name,
       email,
+      role,
       walletAddress: walletAddress || null,
       passwordHash,
       createdAt: new Date().toISOString(),
@@ -1173,13 +1364,14 @@ app.post('/api/auth/signup', async (req, res) => {
     await query(
       `
         INSERT INTO users
-        (id, name, email, wallet_address, password_hash, created_at, last_login_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        (id, name, email, role, wallet_address, password_hash, created_at, last_login_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       `,
       [
         newUser.id,
         newUser.name,
         newUser.email,
+        newUser.role,
         newUser.walletAddress,
         newUser.passwordHash,
         newUser.createdAt,
@@ -1192,6 +1384,7 @@ app.post('/api/auth/signup', async (req, res) => {
     const block = await appendChainBlock('USER_SIGNUP', {
       userId: newUser.id,
       email: newUser.email,
+      role: newUser.role,
       walletAddress: newUser.walletAddress,
       name: newUser.name,
     });
@@ -1200,20 +1393,22 @@ app.post('/api/auth/signup', async (req, res) => {
       id: newUser.id,
       email: newUser.email,
       name: newUser.name,
+      role: newUser.role,
       wallet_address: newUser.walletAddress,
     });
 
     res.status(201).json({
       message: 'Signup successful.',
       token,
-      user: {
+      user: toPublicUser({
         id: newUser.id,
         name: newUser.name,
         email: newUser.email,
-        walletAddress: newUser.walletAddress,
-        createdAt: newUser.createdAt,
-        lastLoginAt: newUser.lastLoginAt,
-      },
+        role: newUser.role,
+        wallet_address: newUser.walletAddress,
+        created_at: newUser.createdAt,
+        last_login_at: newUser.lastLoginAt,
+      }),
       ledgerBlock: {
         index: block.index,
         hash: block.hash,
@@ -1258,6 +1453,7 @@ app.post('/api/auth/login', async (req, res) => {
     const block = await appendChainBlock('USER_LOGIN', {
       userId: user.id,
       email: user.email,
+      role: normalizeRole(user.role),
     });
 
     const token = createToken(updatedUser);

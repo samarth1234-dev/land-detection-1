@@ -8,6 +8,8 @@ const initialSignupState = {
   password: '',
   confirmPassword: '',
   walletAddress: '',
+  role: 'USER',
+  employeeAccessCode: '',
 };
 
 const initialLoginState = {
@@ -31,7 +33,7 @@ export const AuthScreen = ({ onAuthenticated }) => {
     () =>
       mode === 'login'
         ? 'Login to access parcel analytics and land intelligence reports.'
-        : 'Register a new user and anchor signup in the blockchain audit chain.',
+        : 'Register as citizen user or government employee with role-based access.',
     [mode]
   );
 
@@ -71,6 +73,8 @@ export const AuthScreen = ({ onAuthenticated }) => {
           email: signupForm.email.trim(),
           password: signupForm.password,
           walletAddress: signupForm.walletAddress.trim(),
+          role: signupForm.role,
+          employeeAccessCode: signupForm.employeeAccessCode.trim(),
         });
 
         const session = { token: payload.token, user: payload.user };
@@ -116,6 +120,7 @@ export const AuthScreen = ({ onAuthenticated }) => {
           <div className="mt-8 space-y-3">
             {[
               'Satellite-based NDVI analysis with map parcel selection',
+              'Role-based portal: Citizen user vs Government employee analytics',
               'Tamper-evident user audit events recorded in auth blockchain log',
               'Secure backend session management with JWT authentication',
             ].map((item) => (
@@ -246,6 +251,38 @@ export const AuthScreen = ({ onAuthenticated }) => {
                     <Icons.Wallet className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" />
                   </div>
                 </label>
+
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                    Account Type
+                  </span>
+                  <select
+                    value={signupForm.role}
+                    onChange={(event) => onSignupChange('role', event.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                  >
+                    <option value="USER">Citizen User</option>
+                    <option value="EMPLOYEE">Government Employee</option>
+                  </select>
+                </label>
+
+                {signupForm.role === 'EMPLOYEE' && (
+                  <label className="block">
+                    <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                      Employee Access Code
+                    </span>
+                    <div className="relative">
+                      <input
+                        type="password"
+                        value={signupForm.employeeAccessCode}
+                        onChange={(event) => onSignupChange('employeeAccessCode', event.target.value)}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                        placeholder="Enter department code"
+                      />
+                      <Icons.Key className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" />
+                    </div>
+                  </label>
+                )}
               </>
             )}
 

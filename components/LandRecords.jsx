@@ -59,10 +59,13 @@ export const LandRecords = () => {
       const summary = item.summary || '';
       const coords = formatCoords(item.coords);
       const hash = item.ledgerBlock?.hash || '';
+      const user = `${item.user?.name || ''} ${item.user?.email || ''}`;
 
-      return [topCrop, risk, summary, coords, hash].some((value) => String(value).toLowerCase().includes(q));
+      return [topCrop, risk, summary, coords, hash, user].some((value) => String(value).toLowerCase().includes(q));
     });
   }, [items, query]);
+
+  const showUserColumn = items.some((item) => item.user?.name || item.user?.email);
 
   return (
     <div className="space-y-6 p-6">
@@ -105,6 +108,7 @@ export const LandRecords = () => {
             <thead className="bg-slate-100/80 text-xs uppercase tracking-[0.06em] text-slate-500">
               <tr>
                 <th className="px-5 py-3 font-semibold">Date</th>
+                {showUserColumn && <th className="px-5 py-3 font-semibold">User</th>}
                 <th className="px-5 py-3 font-semibold">Coordinates</th>
                 <th className="px-5 py-3 font-semibold">NDVI</th>
                 <th className="px-5 py-3 font-semibold">Top Crop</th>
@@ -116,7 +120,7 @@ export const LandRecords = () => {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={7} className="px-5 py-10 text-center text-slate-500">
+                  <td colSpan={showUserColumn ? 8 : 7} className="px-5 py-10 text-center text-slate-500">
                     Loading records...
                   </td>
                 </tr>
@@ -124,6 +128,14 @@ export const LandRecords = () => {
                 filtered.map((item) => (
                   <tr key={item.id} className="border-t border-slate-100 bg-white/85 hover:bg-white">
                     <td className="px-5 py-4 text-slate-600">{formatDateTime(item.createdAt)}</td>
+                    {showUserColumn && (
+                      <td className="px-5 py-4 text-slate-700">
+                        {item.user?.name || 'Unknown'}
+                        {item.user?.email ? (
+                          <span className="block text-xs text-slate-500">{item.user.email}</span>
+                        ) : null}
+                      </td>
+                    )}
                     <td className="px-5 py-4 font-mono text-xs text-slate-700">{formatCoords(item.coords)}</td>
                     <td className="px-5 py-4 text-slate-700">{Number(item?.ndvi?.mean || 0).toFixed(3)}</td>
                     <td className="px-5 py-4 text-slate-700">{item.recommendedCrops?.[0]?.name || 'NA'}</td>
@@ -136,7 +148,7 @@ export const LandRecords = () => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={7} className="px-5 py-10 text-center">
+                  <td colSpan={showUserColumn ? 8 : 7} className="px-5 py-10 text-center">
                     <p className="font-semibold text-slate-700">No matching records</p>
                     <p className="mt-1 text-xs text-slate-500">Generate new insights from Geo-Explorer to populate this ledger.</p>
                   </td>

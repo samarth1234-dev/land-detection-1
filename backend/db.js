@@ -173,11 +173,23 @@ const bootstrapSchema = async () => {
       id UUID PRIMARY KEY,
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL DEFAULT 'USER',
       wallet_address TEXT NULL,
       password_hash TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
       last_login_at TIMESTAMPTZ NULL
     );
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'USER';
+  `);
+
+  await query(`
+    UPDATE users
+    SET role = 'USER'
+    WHERE role IS NULL OR role = '';
   `);
 
   await query(`

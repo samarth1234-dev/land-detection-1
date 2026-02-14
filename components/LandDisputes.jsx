@@ -344,6 +344,8 @@ export const LandDisputes = () => {
         item.description,
         item.status,
         item.priority,
+        item.reporter?.name,
+        item.reporter?.email,
         item.ledgerBlock?.hash,
       ]
         .filter(Boolean)
@@ -702,6 +704,11 @@ export const LandDisputes = () => {
                       <p>Evidence count: {Array.isArray(item.evidenceUrls) ? item.evidenceUrls.length : 0}</p>
                       <p className="font-mono" title={item.ledgerBlock?.hash || ''}>Block: {shortHash(item.ledgerBlock?.hash)}</p>
                     </div>
+                    {item.reporter && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        Reporter: {item.reporter.name} ({item.reporter.email || 'no-email'})
+                      </p>
+                    )}
                     <p className="mt-1 font-mono text-xs text-slate-500" title={item.snapshotHash || ''}>
                       Snapshot: {shortHash(item.snapshotHash)}
                     </p>

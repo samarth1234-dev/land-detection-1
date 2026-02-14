@@ -23,6 +23,7 @@ Prerequisites:
 3. Create `.env` in project root:
    - `GEMINI_API_KEY=your_key`
    - `JWT_SECRET=your_strong_secret`
+   - `EMPLOYEE_SIGNUP_CODE=optional_secret_for_employee_signup`
    - `DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/root_land`
 4. Start backend API (terminal 1):
    `npm run server`
@@ -48,6 +49,7 @@ Prerequisites:
 - `PUT /api/settings/profile` (authenticated user)
 - `PUT /api/settings/preferences` (authenticated user)
 - `POST /api/settings/password` (authenticated user)
+- `GET /api/analytics/overview` (government employee only)
 
 Auth chain data is stored in:
 - `users` table (PostgreSQL)
@@ -61,3 +63,7 @@ Dispute blockchain notes:
 - each dispute create/status event appends a chain block
 - each event carries a dispute snapshot hash
 - map-selected parcel bounds are stored in `selection_bounds`
+
+Role model:
+- `USER` (citizen): sees only own records/disputes/history
+- `EMPLOYEE` (government employee): sees global metrics, cross-user disputes, and governance analytics

@@ -3,13 +3,22 @@ import { AppView } from '../constants';
 import { Icons } from './Icons';
 
 export const Sidebar = ({ currentView, onChangeView, isOpen, setIsOpen, user, onLogout }) => {
-  const menuItems = [
-    { id: AppView.DASHBOARD, label: 'Dashboard', icon: Icons.Dashboard, hint: 'Regional overview' },
-    { id: AppView.EXPLORER, label: 'Geo-Explorer', icon: Icons.Map, hint: 'NDVI and parcel check' },
-    { id: AppView.RECORDS, label: 'Land Registry', icon: Icons.Database, hint: 'Immutable records' },
-    { id: AppView.DISPUTES, label: 'Land Disputes', icon: Icons.Gavel, hint: 'Case and conflict tracking' },
-    { id: AppView.SETTINGS, label: 'Settings', icon: Icons.Settings, hint: 'Platform preferences' },
-  ];
+  const isEmployee = user?.role === 'EMPLOYEE';
+  const menuItems = isEmployee
+    ? [
+        { id: AppView.DASHBOARD, label: 'Gov Dashboard', icon: Icons.Dashboard, hint: 'Global averages and governance' },
+        { id: AppView.EXPLORER, label: 'Geo-Explorer', icon: Icons.Map, hint: 'NDVI and parcel check' },
+        { id: AppView.RECORDS, label: 'Land Registry', icon: Icons.Database, hint: 'All records and history' },
+        { id: AppView.DISPUTES, label: 'Land Disputes', icon: Icons.Gavel, hint: 'Cross-user dispute workflow' },
+        { id: AppView.SETTINGS, label: 'Settings', icon: Icons.Settings, hint: 'Profile and preferences' },
+      ]
+    : [
+        { id: AppView.DASHBOARD, label: 'My Dashboard', icon: Icons.Dashboard, hint: 'My land intelligence overview' },
+        { id: AppView.EXPLORER, label: 'Geo-Explorer', icon: Icons.Map, hint: 'NDVI and parcel check' },
+        { id: AppView.RECORDS, label: 'My Records', icon: Icons.Database, hint: 'My immutable records' },
+        { id: AppView.DISPUTES, label: 'My Disputes', icon: Icons.Gavel, hint: 'My case tracking' },
+        { id: AppView.SETTINGS, label: 'Settings', icon: Icons.Settings, hint: 'Profile and preferences' },
+      ];
 
   const initials = (user?.name || 'User')
     .trim()
@@ -113,6 +122,7 @@ export const Sidebar = ({ currentView, onChangeView, isOpen, setIsOpen, user, on
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-white">{user?.name || 'Authenticated User'}</p>
                     <p className="truncate text-xs text-slate-400">{user?.email || 'user@root.local'}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">{isEmployee ? 'Government Employee' : 'Citizen User'}</p>
                   </div>
                 </div>
                 <Icons.Activity className="h-4 w-4 text-emerald-300" />

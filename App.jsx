@@ -117,7 +117,7 @@ function App() {
   const renderContent = () => {
     switch (currentView) {
       case AppView.DASHBOARD:
-        return <Dashboard />;
+        return <Dashboard role={session?.user?.role || 'USER'} />;
       case AppView.EXPLORER:
         return <MapExplorer />;
       case AppView.RECORDS:
@@ -179,6 +179,13 @@ function App() {
               <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">
                 <Icons.User className="h-3.5 w-3.5" />
                 {session.user.name}
+              </span>
+              <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                session.user.role === 'EMPLOYEE'
+                  ? 'border-blue-200 bg-blue-50 text-blue-700'
+                  : 'border-slate-200 bg-white text-slate-600'
+              }`}>
+                {session.user.role === 'EMPLOYEE' ? 'Gov Employee' : 'Citizen User'}
               </span>
               <span
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${

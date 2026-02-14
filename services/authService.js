@@ -46,10 +46,10 @@ export const clearSession = () => {
   localStorage.removeItem(AUTH_STORAGE_KEY);
 };
 
-export const signupUser = async ({ name, email, password, walletAddress }) => {
+export const signupUser = async ({ name, email, password, walletAddress, role, employeeAccessCode }) => {
   return request('/signup', {
     method: 'POST',
-    body: { name, email, password, walletAddress },
+    body: { name, email, password, walletAddress, role, employeeAccessCode },
   });
 };
 
