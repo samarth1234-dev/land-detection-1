@@ -437,8 +437,7 @@ const sanitizePolygon = (value) => {
   if (!Array.isArray(value) || value.length < 3) return null;
   const points = value
     .map((point) => toCoordPair(point))
-    .filter(Boolean)
-    .slice(0, 80);
+    .filter(Boolean);
 
   if (points.length < 3) return null;
   const deduped = [];
@@ -752,7 +751,6 @@ const loadGovBoundaries = async ({ includeRemoved = false } = {}) => {
       LEFT JOIN users u ON u.id = gb.created_by
       ${whereSql}
       ORDER BY gb.is_preset DESC, gb.updated_at DESC
-      LIMIT 800
     `
   );
   return result.rows.map(toGovBoundaryRecord);
@@ -2267,10 +2265,6 @@ app.post('/api/land/boundaries', authMiddleware, requireEmployee, async (req, re
       return;
     }
     const areaSqM = Number(polygonAreaSqM(polygon).toFixed(3));
-    if (areaSqM < 20) {
-      res.status(400).json({ message: 'Boundary area is too small.' });
-      return;
-    }
 
     const payload = await withTransaction(async (client) => {
       const now = new Date().toISOString();

@@ -70,6 +70,7 @@ export const Dashboard = ({ role = 'USER' }) => {
   const [boundaries, setBoundaries] = useState([]);
   const [summary, setSummary] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [mapReady, setMapReady] = useState(false);
   const [error, setError] = useState('');
   const [actionMessage, setActionMessage] = useState('');
   const [boundaryForm, setBoundaryForm] = useState({
@@ -125,7 +126,7 @@ export const Dashboard = ({ role = 'USER' }) => {
   }, [isEmployee]);
 
   useEffect(() => {
-    if (!isEmployee || !mapContainerRef.current || mapRef.current) return;
+    if (!isEmployee || isLoading || !mapContainerRef.current || mapRef.current) return;
     const map = L.map(mapContainerRef.current).setView(DEFAULT_MAP_CENTER, 5);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '&copy; OpenStreetMap contributors',
@@ -134,17 +135,19 @@ export const Dashboard = ({ role = 'USER' }) => {
 
     parcelsLayerRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
+    setMapReady(true);
     setTimeout(() => map.invalidateSize(), 100);
 
     return () => {
       map.remove();
       mapRef.current = null;
       parcelsLayerRef.current = null;
+      setMapReady(false);
     };
-  }, [isEmployee]);
+  }, [isEmployee, isLoading]);
 
   useEffect(() => {
-    if (!isEmployee || !mapRef.current || !parcelsLayerRef.current) return;
+    if (!isEmployee || !mapReady || !mapRef.current || !parcelsLayerRef.current) return;
     parcelsLayerRef.current.clearLayers();
 
     const overlays = [];
@@ -185,7 +188,7 @@ export const Dashboard = ({ role = 'USER' }) => {
       const group = L.featureGroup(overlays);
       mapRef.current.fitBounds(group.getBounds(), { padding: [20, 20] });
     }
-  }, [isEmployee, parcels, boundaries]);
+  }, [isEmployee, mapReady, parcels, boundaries]);
 
   const reloadEmployeeData = async () => {
     const [parcelPayload, claimPayload, summaryPayload, boundaryPayload] = await Promise.all([
