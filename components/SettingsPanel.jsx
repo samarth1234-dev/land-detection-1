@@ -36,7 +36,6 @@ const defaultPrefForm = {
   mapZoom: '12',
   notifyDisputeUpdates: true,
   notifyNdviReady: true,
-  notifyWeeklyDigest: false,
 };
 
 const defaultPasswordForm = {
@@ -91,7 +90,6 @@ export const SettingsPanel = ({ onUserUpdate, themeMode = 'light', onThemeModeCh
           mapZoom: String(settings.mapDefaultZoom ?? 12),
           notifyDisputeUpdates: settings.notifications?.disputeUpdates !== false,
           notifyNdviReady: settings.notifications?.ndviReady !== false,
-          notifyWeeklyDigest: settings.notifications?.weeklyDigest === true,
         });
       } catch (loadError) {
         if (!active) return;
@@ -187,7 +185,7 @@ export const SettingsPanel = ({ onUserUpdate, themeMode = 'light', onThemeModeCh
         notifications: {
           disputeUpdates: prefForm.notifyDisputeUpdates,
           ndviReady: prefForm.notifyNdviReady,
-          weeklyDigest: prefForm.notifyWeeklyDigest,
+          weeklyDigest: false,
         },
       });
 
@@ -200,7 +198,6 @@ export const SettingsPanel = ({ onUserUpdate, themeMode = 'light', onThemeModeCh
           mapZoom: String(settings.mapDefaultZoom ?? zoom),
           notifyDisputeUpdates: settings.notifications?.disputeUpdates !== false,
           notifyNdviReady: settings.notifications?.ndviReady !== false,
-          notifyWeeklyDigest: settings.notifications?.weeklyDigest === true,
         });
       }
       setLastLedger(payload?.ledgerBlock || null);
@@ -442,14 +439,6 @@ export const SettingsPanel = ({ onUserUpdate, themeMode = 'light', onThemeModeCh
                   type="checkbox"
                   checked={prefForm.notifyNdviReady}
                   onChange={(event) => handlePrefChange('notifyNdviReady', event.target.checked)}
-                />
-              </label>
-              <label className="flex items-center justify-between text-sm text-slate-700">
-                <span>Weekly digest summary</span>
-                <input
-                  type="checkbox"
-                  checked={prefForm.notifyWeeklyDigest}
-                  onChange={(event) => handlePrefChange('notifyWeeklyDigest', event.target.checked)}
                 />
               </label>
             </div>

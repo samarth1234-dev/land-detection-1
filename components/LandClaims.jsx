@@ -92,12 +92,14 @@ export const LandClaims = ({ role = 'USER' }) => {
   const [locationQuery, setLocationQuery] = useState('');
   const [locationError, setLocationError] = useState('');
   const [isLocating, setIsLocating] = useState(false);
+  const [activeClaimId, setActiveClaimId] = useState('');
 
   const mapContainerRef = useRef(null);
   const mapRef = useRef(null);
   const polygonRef = useRef(null);
   const markersLayerRef = useRef(null);
   const vertexMarkersRef = useRef([]);
+  const claimPreviewLayerRef = useRef(null);
 
   const loadClaims = async () => {
     setIsLoading(true);
@@ -128,6 +130,7 @@ export const LandClaims = ({ role = 'USER' }) => {
     }).addTo(map);
 
     markersLayerRef.current = L.layerGroup().addTo(map);
+    claimPreviewLayerRef.current = L.layerGroup().addTo(map);
 
     const handleClick = (event) => {
       const point = [Number(event.latlng.lat.toFixed(6)), Number(event.latlng.lng.toFixed(6))];
@@ -145,6 +148,7 @@ export const LandClaims = ({ role = 'USER' }) => {
       mapRef.current = null;
       polygonRef.current = null;
       markersLayerRef.current = null;
+      claimPreviewLayerRef.current = null;
       vertexMarkersRef.current = [];
     };
   }, [isEmployee]);
@@ -188,7 +192,48 @@ export const LandClaims = ({ role = 'USER' }) => {
     }
   }, [polygon, isEmployee]);
 
+  useEffect(() => {
+    if (!activeClaimId || claims.some((claim) => claim.id === activeClaimId)) return;
+    setActiveClaimId('');
+    if (claimPreviewLayerRef.current) {
+      claimPreviewLayerRef.current.clearLayers();
+    }
+  }, [claims, activeClaimId]);
+
   const areaSqM = useMemo(() => Number(polygonAreaSqM(polygon).toFixed(2)), [polygon]);
+
+  const activeClaim = useMemo(
+    () => claims.find((claim) => claim.id === activeClaimId) || null,
+    [claims, activeClaimId]
+  );
+
+  const focusClaimOnMap = (claim) => {
+    if (
+      isEmployee
+      || !mapRef.current
+      || !claimPreviewLayerRef.current
+      || !Array.isArray(claim?.polygon)
+      || claim.polygon.length < 3
+    ) {
+      return;
+    }
+
+    claimPreviewLayerRef.current.clearLayers();
+    const previewLayer = L.polygon(claim.polygon, {
+      color: '#0f7db6',
+      weight: 3,
+      fillColor: '#38bdf8',
+      fillOpacity: 0.24,
+      dashArray: '6 4',
+    })
+      .bindPopup(`<strong>PID:</strong> ${claim.pid}<br/><strong>Area:</strong> ${Number(claim.areaSqM || 0).toFixed(2)} sq.m`)
+      .addTo(claimPreviewLayerRef.current);
+
+    setActiveClaimId(claim.id);
+    mapRef.current.fitBounds(previewLayer.getBounds(), { padding: [18, 18], maxZoom: 16 });
+    previewLayer.openPopup();
+    mapContainerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
 
   const handleSearchLocation = async (event) => {
     event?.preventDefault?.();
@@ -387,6 +432,11 @@ export const LandClaims = ({ role = 'USER' }) => {
               </div>
               {locationError && <p className="mb-2 text-xs text-rose-600">{locationError}</p>}
               <div ref={mapContainerRef} className="h-[420px] w-full overflow-hidden rounded-lg border border-slate-200" />
+              {activeClaim && (
+                <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50/70 px-3 py-2 text-xs text-blue-800">
+                  Highlighted claim PID: <span className="font-semibold">{activeClaim.pid}</span>
+                </div>
+              )}
             </div>
           </form>
         </section>
@@ -419,7 +469,22 @@ export const LandClaims = ({ role = 'USER' }) => {
               <article key={claim.id} className="rounded-xl border border-slate-200 bg-white/90 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <p className="text-sm font-semibold text-slate-900">PID: {claim.pid}</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      PID:
+                      {' '}
+                      {!isEmployee && Array.isArray(claim.polygon) && claim.polygon.length >= 3 ? (
+                        <button
+                          type="button"
+                          onClick={() => focusClaimOnMap(claim)}
+                          className="font-semibold text-brand-700 underline decoration-dotted underline-offset-2 hover:text-brand-600"
+                          title="Show this claim polygon on map"
+                        >
+                          {claim.pid}
+                        </button>
+                      ) : (
+                        <span>{claim.pid}</span>
+                      )}
+                    </p>
                     <p className="text-xs text-slate-500">Submitted: {formatDateTime(claim.createdAt)}</p>
                   </div>
                   <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${toStatusTone(claim.status)}`}>

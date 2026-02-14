@@ -45,16 +45,17 @@
     </script>
     <style>
       :root {
-        --bg-start: #e7f2ef;
-        --bg-mid: #f4f8f5;
-        --bg-end: #edf4fb;
-        --panel-border: #dce6df;
+        --bg-start: #eaf2ef;
+        --bg-mid: #f5f8f6;
+        --bg-end: #eef4fb;
+        --panel-border: #d7e2de;
+        --panel-shadow: 0 14px 28px rgba(15, 23, 42, 0.08);
       }
       body {
         font-family: 'Manrope', sans-serif;
         background:
-          radial-gradient(1200px 800px at -15% -20%, #d3ece2 0%, transparent 65%),
-          radial-gradient(1000px 700px at 120% -10%, #d8e8f7 0%, transparent 60%),
+          radial-gradient(1120px 780px at -12% -18%, #d8ede3 0%, transparent 62%),
+          radial-gradient(980px 680px at 118% -6%, #d9e9f8 0%, transparent 58%),
           linear-gradient(170deg, var(--bg-start) 0%, var(--bg-mid) 48%, var(--bg-end) 100%);
         color: #0f172a;
         transition: background 220ms ease, color 220ms ease;
@@ -66,20 +67,22 @@
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88));
         border: 1px solid var(--panel-border);
         backdrop-filter: blur(6px);
+        box-shadow: var(--panel-shadow);
       }
       body.theme-dark {
-        --bg-start: #060b14;
-        --bg-mid: #0a1220;
-        --bg-end: #0d1828;
-        --panel-border: #2b3a52;
+        --bg-start: #060d17;
+        --bg-mid: #0a1321;
+        --bg-end: #0f1a2b;
+        --panel-border: #2a3a52;
+        --panel-shadow: 0 18px 36px rgba(2, 8, 23, 0.55);
         background:
-          radial-gradient(1180px 700px at -10% -20%, rgba(22, 78, 99, 0.46) 0%, transparent 60%),
-          radial-gradient(920px 640px at 120% -10%, rgba(24, 92, 60, 0.38) 0%, transparent 58%),
+          radial-gradient(1200px 760px at -12% -20%, rgba(18, 62, 88, 0.46) 0%, transparent 60%),
+          radial-gradient(930px 640px at 122% -8%, rgba(20, 74, 67, 0.34) 0%, transparent 58%),
           linear-gradient(170deg, var(--bg-start) 0%, var(--bg-mid) 52%, var(--bg-end) 100%);
-        color: #e7edf7;
+        color: #e6eef9;
       }
       body.theme-dark .panel-surface {
-        background: linear-gradient(180deg, rgba(10, 18, 32, 0.94), rgba(9, 16, 28, 0.88));
+        background: linear-gradient(180deg, rgba(11, 20, 35, 0.95), rgba(10, 18, 31, 0.9));
         border-color: var(--panel-border);
       }
       body.theme-dark .text-slate-900 { color: #f4f7fc !important; }
@@ -95,20 +98,28 @@
       body.theme-dark .bg-slate-50,
       body.theme-dark .bg-slate-100,
       body.theme-dark .bg-slate-100\/80 {
-        background-color: rgba(11, 19, 33, 0.78) !important;
+        background-color: rgba(12, 21, 36, 0.84) !important;
       }
       body.theme-dark .border-slate-100,
       body.theme-dark .border-slate-200,
       body.theme-dark .border-slate-300 {
-        border-color: #2f3f59 !important;
+        border-color: #30445f !important;
       }
       body.theme-dark input,
       body.theme-dark select,
       body.theme-dark textarea {
-        background-color: rgba(10, 18, 32, 0.72) !important;
-        border-color: #2f3f59 !important;
+        background-color: rgba(9, 18, 32, 0.78) !important;
+        border-color: #30445f !important;
         color: #e8eef8 !important;
       }
+      body.theme-dark .bg-blue-50 { background-color: rgba(30, 64, 175, 0.18) !important; }
+      body.theme-dark .bg-emerald-50 { background-color: rgba(5, 150, 105, 0.17) !important; }
+      body.theme-dark .bg-rose-50 { background-color: rgba(225, 29, 72, 0.14) !important; }
+      body.theme-dark .bg-amber-50 { background-color: rgba(217, 119, 6, 0.18) !important; }
+      body.theme-dark .border-blue-200 { border-color: rgba(96, 165, 250, 0.42) !important; }
+      body.theme-dark .border-emerald-200 { border-color: rgba(52, 211, 153, 0.4) !important; }
+      body.theme-dark .border-rose-200 { border-color: rgba(251, 113, 133, 0.36) !important; }
+      body.theme-dark .border-amber-200 { border-color: rgba(251, 191, 36, 0.38) !important; }
       body.theme-dark input::placeholder,
       body.theme-dark textarea::placeholder {
         color: #94a3b8 !important;

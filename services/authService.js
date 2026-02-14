@@ -1,6 +1,14 @@
 import { buildApiUrl, parseJsonResponse } from './apiClient.js';
 
 const AUTH_STORAGE_KEY = 'root_auth_session_v1';
+const safeSessionStorage = () => {
+  if (typeof window === 'undefined') return null;
+  return window.sessionStorage;
+};
+const safeLocalStorage = () => {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage;
+};
 
 const request = async (path, options = {}) => {
   const response = await fetch(buildApiUrl(`/api/auth${path}`), {
@@ -16,12 +24,24 @@ const request = async (path, options = {}) => {
 };
 
 export const saveSession = (session) => {
-  localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+  const sessionStore = safeSessionStorage();
+  if (sessionStore) {
+    sessionStore.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+  }
+  const legacyStore = safeLocalStorage();
+  if (legacyStore) {
+    legacyStore.removeItem(AUTH_STORAGE_KEY);
+  }
 };
 
 export const loadSession = () => {
   try {
-    const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+    const sessionStore = safeSessionStorage();
+    const raw = sessionStore?.getItem(AUTH_STORAGE_KEY);
+    const legacyStore = safeLocalStorage();
+    if (!raw && legacyStore?.getItem(AUTH_STORAGE_KEY)) {
+      legacyStore.removeItem(AUTH_STORAGE_KEY);
+    }
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed?.token || !parsed?.user) return null;
@@ -32,7 +52,14 @@ export const loadSession = () => {
 };
 
 export const clearSession = () => {
-  localStorage.removeItem(AUTH_STORAGE_KEY);
+  const sessionStore = safeSessionStorage();
+  if (sessionStore) {
+    sessionStore.removeItem(AUTH_STORAGE_KEY);
+  }
+  const legacyStore = safeLocalStorage();
+  if (legacyStore) {
+    legacyStore.removeItem(AUTH_STORAGE_KEY);
+  }
 };
 
 export const signupUser = async ({ name, email, password, walletAddress, role, employeeAccessCode, employeeId }) => {
