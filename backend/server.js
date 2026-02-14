@@ -10,7 +10,7 @@ import { closeDatabase, getPersistenceMode, initDatabase, query, withTransaction
 
 dotenv.config();
 
-const PORT = Number(process.env.API_PORT || 4000);
+const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
 const JWT_SECRET = process.env.JWT_SECRET || 'replace-me-with-a-strong-secret';
 const TOKEN_EXPIRY = process.env.TOKEN_EXPIRY || '7d';
 const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'http://127.0.0.1:3000,http://localhost:3000')
