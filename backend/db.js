@@ -1,10 +1,19 @@
 import os from 'os';
 import { Pool } from 'pg';
+import { newDb } from 'pg-mem';
 
 const toBool = (value, fallback = false) => {
   if (typeof value !== 'string') return fallback;
   const normalized = value.trim().toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
+};
+
+const normalizePersistenceMode = (value) => {
+  const mode = String(value || 'auto').trim().toLowerCase();
+  if (mode === 'postgresql' || mode === 'memory' || mode === 'auto') {
+    return mode;
+  }
+  return 'auto';
 };
 
 const buildEnvPoolConfig = () => {
@@ -141,16 +150,28 @@ const connectPool = async (config) => {
   }
 };
 
+const connectMemoryPool = async () => {
+  const memoryDb = newDb({
+    autoCreateForeignKeyIndices: true,
+  });
+  const adapter = memoryDb.adapters.createPg();
+  const memoryPool = new adapter.Pool();
+  await memoryPool.query('SELECT 1');
+  return memoryPool;
+};
+
 export let pool = null;
+let persistenceMode = 'postgresql';
 
 const ensurePool = () => {
   if (!pool) {
-    throw new Error('Database is not initialized. Start backend with a valid PostgreSQL configuration.');
+    throw new Error('Database is not initialized yet.');
   }
   return pool;
 };
 
 export const query = (text, params = []) => ensurePool().query(text, params);
+export const getPersistenceMode = () => persistenceMode;
 
 export const withTransaction = async (handler) => {
   const client = await ensurePool().connect();
@@ -292,12 +313,24 @@ const bootstrapSchema = async () => {
 export const initDatabase = async () => {
   if (pool) return;
 
+  const persistencePreference = normalizePersistenceMode(process.env.PERSISTENCE_MODE || 'auto');
+  const allowMemoryFallback = toBool(process.env.ALLOW_MEMORY_FALLBACK, true);
+
+  if (persistencePreference === 'memory') {
+    pool = await connectMemoryPool();
+    persistenceMode = 'memory';
+    await bootstrapSchema();
+    console.log('Memory database initialized (PERSISTENCE_MODE=memory).');
+    return;
+  }
+
   const candidates = buildFallbackCandidates();
   const errors = [];
 
   for (const candidate of candidates) {
     try {
       pool = await connectPool(candidate.config);
+      persistenceMode = 'postgresql';
       console.log(`PostgreSQL connected (${candidate.label}: ${formatConfigHint(candidate.config)})`);
       await bootstrapSchema();
       return;
@@ -309,11 +342,24 @@ export const initDatabase = async () => {
   }
 
   const summary = errors.join(' | ');
-  throw new Error(`Unable to connect to PostgreSQL. Tried fallbacks. ${summary}`);
+
+  if (persistencePreference === 'auto' && allowMemoryFallback) {
+    pool = await connectMemoryPool();
+    persistenceMode = 'memory';
+    await bootstrapSchema();
+    console.warn(`PostgreSQL unavailable. Falling back to in-memory mode. ${summary}`);
+    return;
+  }
+
+  throw new Error(
+    `Unable to connect to PostgreSQL. Tried fallbacks. ${summary}.` +
+      ` Set PERSISTENCE_MODE=memory for demo runs or fix DB credentials in .env.`
+  );
 };
 
 export const closeDatabase = async () => {
   if (!pool) return;
   await pool.end();
   pool = null;
+  persistenceMode = 'postgresql';
 };

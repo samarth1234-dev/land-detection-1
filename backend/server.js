@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import jwt from 'jsonwebtoken';
 
-import { closeDatabase, initDatabase, query, withTransaction } from './db.js';
+import { closeDatabase, getPersistenceMode, initDatabase, query, withTransaction } from './db.js';
 
 dotenv.config();
 
@@ -544,11 +544,12 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/health', async (_req, res) => {
+  const persistence = getPersistenceMode();
   if (!databaseReady) {
     res.json({
       status: 'starting',
       service: 'root-auth-api',
-      persistence: 'postgresql',
+      persistence,
       blockchainIntegrity: false,
       totalBlocks: 0,
       totalDisputes: 0,
@@ -562,7 +563,7 @@ app.get('/api/health', async (_req, res) => {
   res.json({
     status: 'ok',
     service: 'root-auth-api',
-    persistence: 'postgresql',
+    persistence,
     blockchainIntegrity: integrity.valid,
     totalBlocks: chain.length,
     totalDisputes: disputeCountResult.rows[0]?.count || 0,
@@ -1780,7 +1781,7 @@ const startDatabaseWithRetry = async () => {
       await initDatabase();
       await ensureGenesisBlock();
       databaseReady = true;
-      console.log('Database initialization complete.');
+      console.log(`Database initialization complete (${getPersistenceMode()}).`);
     } catch (error) {
       databaseReady = false;
       console.error(`Database init failed: ${error.message}`);
@@ -1794,7 +1795,7 @@ void startDatabaseWithRetry();
 
 app.listen(PORT, () => {
   console.log(`Auth API running on http://127.0.0.1:${PORT}`);
-  console.log('Persistence: PostgreSQL');
+  console.log(`Persistence preference: ${String(process.env.PERSISTENCE_MODE || 'auto').trim() || 'auto'}`);
   if (JWT_SECRET === 'replace-me-with-a-strong-secret') {
     console.warn('Using fallback JWT secret. Set JWT_SECRET in .env for production.');
   }

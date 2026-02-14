@@ -7,30 +7,39 @@
 Land intelligence platform with:
 - NDVI-based parcel analysis (Leaflet + Sentinel via Earth Search + TiTiler)
 - Blockchain-style tamper-evident auth ledger
-- Secure login/signup backend with JWT + PostgreSQL persistence
+- Secure login/signup backend with JWT + PostgreSQL (or in-memory demo mode)
 - Land dispute workflow with map-based parcel selection (2-click rectangle)
 
 ## Local Setup
 
 Prerequisites:
-- Node.js 18+
-- PostgreSQL 14+
+- Node.js 18+ (Node 20+ recommended)
 
-1. Install dependencies:
+### Quick Start (works on Windows without PostgreSQL)
+
+1. Clone repo and open project folder.
+2. Install dependencies:
    `npm install`
-2. Create PostgreSQL database:
-   `createdb root_land`
-3. Create `.env` in project root:
-   - `GEMINI_API_KEY=your_key`
-   - `JWT_SECRET=your_strong_secret`
-   - `EMPLOYEE_SIGNUP_CODE=optional_secret_for_employee_signup`
-   - `DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/root_land`
-4. Start backend API (terminal 1):
-   `npm run server`
-5. Start frontend (terminal 2):
-   `npm run dev`
-6. Open:
+3. Copy env template:
+   - PowerShell: `Copy-Item .env.example .env`
+   - CMD: `copy .env.example .env`
+4. Run frontend + backend together:
+   `npm run dev:all`
+5. Open:
    [http://127.0.0.1:3000](http://127.0.0.1:3000)
+
+In this mode (`PERSISTENCE_MODE=auto`), backend will use PostgreSQL if available, otherwise it auto-falls back to in-memory mode so the app still runs.
+
+### PostgreSQL Mode (persistent storage)
+
+1. Install PostgreSQL and create DB `root_land`.
+2. Update `.env`:
+   - `PERSISTENCE_MODE=postgresql`
+   - `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, `DB_NAME`
+   - or `DATABASE_URL=postgresql://...`
+3. Run:
+   - terminal 1: `npm run server`
+   - terminal 2: `npm run dev`
 
 ## Auth API
 
@@ -52,12 +61,8 @@ Prerequisites:
 - `GET /api/analytics/overview` (government employee only)
 
 Auth chain data is stored in:
-- `users` table (PostgreSQL)
-- `chain_blocks` table (PostgreSQL)
-- `agri_insights` table (PostgreSQL)
-- `user_settings` table (PostgreSQL)
-- `land_disputes` table (PostgreSQL)
-- `dispute_events` table (PostgreSQL)
+- PostgreSQL tables (`users`, `chain_blocks`, `agri_insights`, `user_settings`, `land_disputes`, `dispute_events`) when PostgreSQL mode is active
+- In-memory database when demo mode fallback is active
 
 Dispute blockchain notes:
 - each dispute create/status event appends a chain block
