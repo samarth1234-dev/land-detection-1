@@ -41,6 +41,26 @@ In this mode (`PERSISTENCE_MODE=auto`), backend will use PostgreSQL if available
    - terminal 1: `npm run server`
    - terminal 2: `npm run dev`
 
+### Supabase PostgreSQL Mode
+
+Supabase gives you managed PostgreSQL. This project backend (Express) still runs on your machine/server, but stores all data in Supabase DB.
+
+1. In Supabase dashboard:
+   - Create project
+   - Open `Project Settings -> Database -> Connection string`
+   - Copy the **pooler** connection string
+2. In local `.env`, set:
+   - `SUPABASE_DB_URL=your_pooler_url`
+   - `PERSISTENCE_MODE=postgresql`
+   - `ALLOW_MEMORY_FALLBACK=false`
+   - `DATABASE_SSL=true`
+3. Run with strict Supabase mode:
+   - backend only: `npm run server:supabase`
+   - frontend + backend: `npm run dev:supabase`
+4. Check:
+   - `http://127.0.0.1:4000/api/health`
+   - response should include `"persistence":"postgresql"`
+
 ## Auth API
 
 - `POST /api/auth/signup`

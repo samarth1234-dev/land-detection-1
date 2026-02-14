@@ -16,13 +16,30 @@ const normalizePersistenceMode = (value) => {
   return 'auto';
 };
 
+const inferSslFromConnectionString = (connectionString) => {
+  if (!connectionString) return false;
+  try {
+    const parsed = new URL(connectionString);
+    const sslMode = String(parsed.searchParams.get('sslmode') || '').toLowerCase();
+    if (sslMode === 'require' || sslMode === 'verify-ca' || sslMode === 'verify-full') {
+      return true;
+    }
+    return parsed.hostname.includes('supabase.co');
+  } catch {
+    return false;
+  }
+};
+
 const buildEnvPoolConfig = () => {
-  const connectionString = process.env.DATABASE_URL;
-  const sslEnabled = toBool(process.env.DATABASE_SSL, false);
+  const connectionString = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
+  const hasExplicitSslFlag = typeof process.env.DATABASE_SSL === 'string' && process.env.DATABASE_SSL.trim() !== '';
+  const sslEnabled = hasExplicitSslFlag
+    ? toBool(process.env.DATABASE_SSL, false)
+    : inferSslFromConnectionString(connectionString);
   const ssl = sslEnabled ? { rejectUnauthorized: false } : false;
 
   if (connectionString) {
-    return { connectionString, ssl };
+    return sslEnabled ? { connectionString, ssl } : { connectionString };
   }
 
   return {
