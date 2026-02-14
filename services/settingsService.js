@@ -1,17 +1,5 @@
 import { loadSession } from './authService.js';
-
-const parseResponse = async (response) => {
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
-
-  if (!response.ok) {
-    const error = new Error(payload?.message || 'Settings request failed.');
-    error.status = response.status;
-    throw error;
-  }
-
-  return payload;
-};
+import { buildApiUrl, parseJsonResponse } from './apiClient.js';
 
 const authHeaders = () => {
   const session = loadSession();
@@ -25,36 +13,36 @@ const authHeaders = () => {
 };
 
 export const fetchSettingsProfile = async () => {
-  const response = await fetch('/api/settings/profile', {
+  const response = await fetch(buildApiUrl('/api/settings/profile'), {
     method: 'GET',
     headers: authHeaders(),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to load settings profile.');
 };
 
 export const updateSettingsProfile = async (payload) => {
-  const response = await fetch('/api/settings/profile', {
+  const response = await fetch(buildApiUrl('/api/settings/profile'), {
     method: 'PUT',
     headers: authHeaders(),
     body: JSON.stringify(payload),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to update profile settings.');
 };
 
 export const updateSettingsPreferences = async (payload) => {
-  const response = await fetch('/api/settings/preferences', {
+  const response = await fetch(buildApiUrl('/api/settings/preferences'), {
     method: 'PUT',
     headers: authHeaders(),
     body: JSON.stringify(payload),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to update preference settings.');
 };
 
 export const updateSettingsPassword = async ({ currentPassword, nextPassword }) => {
-  const response = await fetch('/api/settings/password', {
+  const response = await fetch(buildApiUrl('/api/settings/password'), {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ currentPassword, nextPassword }),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to update password.');
 };

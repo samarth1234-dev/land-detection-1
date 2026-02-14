@@ -1,47 +1,51 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import L from 'leaflet';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
+
 import { Icons } from './Icons';
 import { analyzeLandData } from '../services/geminiService';
 import { fetchAgricultureInsights } from '../services/agriInsightsService.js';
-import { BarChart, Bar, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import L from "leaflet";
-import markerIcon2x from "leaflet/dist/images/marker-icon-2x.png";
-import markerIcon from "leaflet/dist/images/marker-icon.png";
-import markerShadow from "leaflet/dist/images/marker-shadow.png";
+import { fetchCurrentNdvi, fetchNdviTimeline, searchLocation } from '../services/ndviService.js';
 
-// Fix Leaflet icons
-delete L.Icon.Default.prototype._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: markerIcon2x,
-  iconUrl: markerIcon,
-  shadowUrl: markerShadow,
-});
-
-const EARTH_SEARCH_URL = '/earth-search/search';
-const TITILER_STATS_URL = '/titiler/stac/statistics';
-const NOMINATIM_URL = '/nominatim/search';
+if (!L.Icon.Default.prototype._rootMapExplorerIconFix) {
+  delete L.Icon.Default.prototype._getIconUrl;
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: markerIcon2x,
+    iconUrl: markerIcon,
+    shadowUrl: markerShadow,
+  });
+  L.Icon.Default.prototype._rootMapExplorerIconFix = true;
+}
 
 const DEFAULT_LOCATION = {
   name: 'Default Location',
-  coords: [36.7378, -119.7871]
+  coords: [22.8706, 88.3770],
 };
 
 const MAP_LAYERS = [
-  { id: 'OSM', name: 'OpenStreetMap', url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', attribution: '&copy; OpenStreetMap contributors' },
-  { id: 'SAT', name: 'Satellite (Esri)', url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community' }
+  {
+    id: 'OSM',
+    name: 'OpenStreetMap',
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
+  },
+  {
+    id: 'SAT',
+    name: 'Satellite (Esri)',
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attribution:
+      'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+  },
 ];
-
-const STAT_COLORS = ['#d7191c', '#fdae61', '#ffffbf', '#a6d96a', '#1a9641'];
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
-const toNumber = (value, fallback = 0) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
-
 const formatCoord = (coords) => {
-  if (!coords) return 'NA';
-  return `${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`;
+  if (!coords || !Array.isArray(coords) || coords.length < 2) return 'NA';
+  return `${Number(coords[0]).toFixed(5)}, ${Number(coords[1]).toFixed(5)}`;
 };
 
 const formatDate = (isoValue) => {
@@ -51,215 +55,45 @@ const formatDate = (isoValue) => {
   return date.toLocaleDateString();
 };
 
-const extractErrorText = async (response) => {
-  try {
-    const payload = await response.json();
-    if (payload?.detail) {
-      return typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail);
-    }
-    return JSON.stringify(payload);
-  } catch (_) {
-    try {
-      return await response.text();
-    } catch (__ ) {
-      return 'Unknown API error';
-    }
-  }
+const parseLatLngQuery = (value) => {
+  const match = String(value || '').trim().match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!match) return null;
+  const lat = Number(match[1]);
+  const lng = Number(match[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return [lat, lng];
 };
 
-const getDateRange = (daysBack = 120) => {
-  const end = new Date();
-  const start = new Date();
-  start.setDate(end.getDate() - daysBack);
-  return `${start.toISOString()}/${end.toISOString()}`;
-};
-
-const buildSelectionFeature = (selectionBounds) => {
-  const nw = selectionBounds.northWest;
-  const ne = selectionBounds.northEast;
-  const sw = selectionBounds.southWest;
-  const se = selectionBounds.southEast;
+const toBoundsPayload = (bounds) => {
+  const nw = bounds.getNorthWest();
+  const ne = bounds.getNorthEast();
+  const sw = bounds.getSouthWest();
+  const se = bounds.getSouthEast();
+  const center = bounds.getCenter();
 
   return {
-    type: 'Feature',
-    properties: {},
-    geometry: {
-      type: 'Polygon',
-      coordinates: [[
-        [nw[1], nw[0]],
-        [ne[1], ne[0]],
-        [se[1], se[0]],
-        [sw[1], sw[0]],
-        [nw[1], nw[0]]
-      ]]
-    }
+    northWest: [Number(nw.lat.toFixed(6)), Number(nw.lng.toFixed(6))],
+    northEast: [Number(ne.lat.toFixed(6)), Number(ne.lng.toFixed(6))],
+    southWest: [Number(sw.lat.toFixed(6)), Number(sw.lng.toFixed(6))],
+    southEast: [Number(se.lat.toFixed(6)), Number(se.lng.toFixed(6))],
+    center: [Number(center.lat.toFixed(6)), Number(center.lng.toFixed(6))],
   };
-};
-
-const buildBbox = (selectionBounds) => {
-  const lats = [
-    selectionBounds.northWest[0],
-    selectionBounds.northEast[0],
-    selectionBounds.southWest[0],
-    selectionBounds.southEast[0]
-  ];
-  const lngs = [
-    selectionBounds.northWest[1],
-    selectionBounds.northEast[1],
-    selectionBounds.southWest[1],
-    selectionBounds.southEast[1]
-  ];
-
-  return [
-    Math.min(...lngs),
-    Math.min(...lats),
-    Math.max(...lngs),
-    Math.max(...lats)
-  ];
-};
-
-const fallbackHistogram = (mean) => {
-  const buckets = new Array(10).fill(0);
-  const idx = clamp(Math.floor(((mean + 1) / 2) * 10), 0, 9);
-  buckets[idx] = 1;
-  return buckets.map((count, i) => ({
-    bin: (-1 + i * 0.2).toFixed(2),
-    count
-  }));
-};
-
-const histogramFromTitiler = (rawHistogram, min, max, mean) => {
-  if (
-    rawHistogram &&
-    typeof rawHistogram === 'object' &&
-    !Array.isArray(rawHistogram) &&
-    Array.isArray(rawHistogram.bins) &&
-    Array.isArray(rawHistogram.counts)
-  ) {
-    const edges = rawHistogram.bins;
-    const counts = rawHistogram.counts;
-    if (counts.length > 0) {
-      return counts.map((count, idx) => {
-        const hasEdgePairs = edges.length === counts.length + 1;
-        const center = hasEdgePairs
-          ? (toNumber(edges[idx]) + toNumber(edges[idx + 1])) / 2
-          : min + ((idx + 0.5) * (max - min)) / counts.length;
-
-        return {
-          bin: clamp(center, -1, 1).toFixed(2),
-          count: toNumber(count)
-        };
-      });
-    }
-  }
-
-  if (
-    Array.isArray(rawHistogram) &&
-    rawHistogram.length === 2 &&
-    Array.isArray(rawHistogram[0]) &&
-    Array.isArray(rawHistogram[1])
-  ) {
-    const edges = rawHistogram[0];
-    const counts = rawHistogram[1];
-    if (counts.length > 0) {
-      return counts.map((count, idx) => {
-        const hasEdgePairs = edges.length === counts.length + 1;
-        const center = hasEdgePairs
-          ? (toNumber(edges[idx]) + toNumber(edges[idx + 1])) / 2
-          : min + ((idx + 0.5) * (max - min)) / counts.length;
-
-        return {
-          bin: clamp(center, -1, 1).toFixed(2),
-          count: toNumber(count)
-        };
-      });
-    }
-  }
-
-  return fallbackHistogram(mean);
-};
-
-const parseTitilerStats = (payload) => {
-  const candidates = [];
-  const pushCandidate = (value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
-
-    if (
-      Number.isFinite(toNumber(value.mean, NaN)) ||
-      Number.isFinite(toNumber(value.min, NaN)) ||
-      Number.isFinite(toNumber(value.max, NaN))
-    ) {
-      candidates.push(value);
-    }
-  };
-
-  const walk = (node, depth = 0) => {
-    if (!node || depth > 6) return;
-    if (Array.isArray(node)) {
-      node.forEach((value) => walk(value, depth + 1));
-      return;
-    }
-    if (typeof node !== 'object') return;
-
-    pushCandidate(node);
-    Object.values(node).forEach((value) => walk(value, depth + 1));
-  };
-
-  walk(payload, 0);
-
-  const stat = candidates
-    .sort((a, b) => {
-      const aScore =
-        Number.isFinite(toNumber(a.min, NaN)) +
-        Number.isFinite(toNumber(a.max, NaN)) +
-        Number.isFinite(toNumber(a.mean, NaN)) +
-        (a.histogram ? 1 : 0);
-      const bScore =
-        Number.isFinite(toNumber(b.min, NaN)) +
-        Number.isFinite(toNumber(b.max, NaN)) +
-        Number.isFinite(toNumber(b.mean, NaN)) +
-        (b.histogram ? 1 : 0);
-      return bScore - aScore;
-    })[0];
-
-  if (!stat) {
-    throw new Error('Could not parse NDVI statistics response.');
-  }
-
-  const min = clamp(toNumber(stat.min, -1), -1, 1);
-  const max = clamp(toNumber(stat.max, 1), -1, 1);
-  const mean = clamp(toNumber(stat.mean, 0), -1, 1);
-  const stdDev = toNumber(stat.std, toNumber(stat.stdev, toNumber(stat.stdDev, 0)));
-  const histogram = histogramFromTitiler(stat.histogram, min, max, mean);
-
-  return { min, max, mean, stdDev, histogram };
-};
-
-const selectAssetPair = (assets = {}) => {
-  const keys = Object.keys(assets);
-  const redCandidates = ['red', 'B04', 'b04', 'red-jp2'];
-  const nirCandidates = ['nir', 'nir08', 'B08', 'b08', 'nir08-jp2', 'nir-jp2'];
-
-  const red = redCandidates.find((key) => keys.includes(key));
-  const nir = nirCandidates.find((key) => keys.includes(key));
-
-  if (!red || !nir) return null;
-  return { red, nir };
 };
 
 const classifyLandByNdvi = (stats) => {
   if (!stats?.histogram?.length) return null;
 
-  const total = stats.histogram.reduce((acc, entry) => acc + toNumber(entry.count), 0) || 1;
+  const total = stats.histogram.reduce((acc, entry) => acc + Number(entry.count || 0), 0) || 1;
   const high = stats.histogram
-    .filter((entry) => toNumber(entry.bin) >= 0.45)
-    .reduce((acc, entry) => acc + toNumber(entry.count), 0);
+    .filter((entry) => Number(entry.bin) >= 0.45)
+    .reduce((acc, entry) => acc + Number(entry.count || 0), 0);
   const moderate = stats.histogram
-    .filter((entry) => toNumber(entry.bin) >= 0.2 && toNumber(entry.bin) < 0.45)
-    .reduce((acc, entry) => acc + toNumber(entry.count), 0);
+    .filter((entry) => Number(entry.bin) >= 0.2 && Number(entry.bin) < 0.45)
+    .reduce((acc, entry) => acc + Number(entry.count || 0), 0);
   const negative = stats.histogram
-    .filter((entry) => toNumber(entry.bin) < 0)
-    .reduce((acc, entry) => acc + toNumber(entry.count), 0);
+    .filter((entry) => Number(entry.bin) < 0)
+    .reduce((acc, entry) => acc + Number(entry.count || 0), 0);
 
   const highPct = (high / total) * 100;
   const moderatePct = (moderate / total) * 100;
@@ -269,15 +103,15 @@ const classifyLandByNdvi = (stats) => {
     return {
       label: 'Forest / Dense Vegetation',
       confidence: Math.min(95, Math.round(60 + highPct * 0.7)),
-      reason: 'High true NDVI and strong dense-green share indicate forest or dense vegetation.'
+      reason: 'High NDVI and strong dense-green share indicate forest or dense vegetation.',
     };
   }
 
-  if (stats.mean >= 0.25 && (highPct + moderatePct) >= 45) {
+  if (stats.mean >= 0.25 && highPct + moderatePct >= 45) {
     return {
       label: 'Agriculture / Cropland',
       confidence: Math.min(92, Math.round(55 + (highPct + moderatePct) * 0.5)),
-      reason: 'Moderate-to-high true NDVI is typical of active crop cover.'
+      reason: 'Moderate-to-high NDVI values indicate active crop cover.',
     };
   }
 
@@ -285,7 +119,7 @@ const classifyLandByNdvi = (stats) => {
     return {
       label: 'Grassland / Shrubland',
       confidence: 74,
-      reason: 'Medium NDVI indicates sparse-to-moderate vegetation.'
+      reason: 'Medium NDVI suggests sparse-to-moderate vegetation.',
     };
   }
 
@@ -293,14 +127,14 @@ const classifyLandByNdvi = (stats) => {
     return {
       label: 'Water / Wet Surface',
       confidence: 80,
-      reason: 'Negative NDVI dominant share indicates water or saturated surfaces.'
+      reason: 'Negative NDVI dominance indicates water or saturated surface.',
     };
   }
 
   return {
     label: 'Barren / Built-up',
     confidence: 72,
-    reason: 'Low NDVI response suggests bare soil, dry land, or built-up surfaces.'
+    reason: 'Low NDVI response suggests bare soil, dry land, or built-up surface.',
   };
 };
 
@@ -320,6 +154,13 @@ const createAnalysisPlaceholderImage = (meanNdvi) => {
   return canvas.toDataURL('image/jpeg').split(',')[1];
 };
 
+const toTimelineChartData = (timeline = []) =>
+  timeline.map((item) => ({
+    year: String(item.year || ''),
+    mean: item.status === 'OK' ? Number(item.mean) : null,
+    status: item.status,
+  }));
+
 export const MapExplorer = () => {
   const [activeLocation, setActiveLocation] = useState(DEFAULT_LOCATION);
   const [activeBaseLayer, setActiveBaseLayer] = useState('SAT');
@@ -338,6 +179,8 @@ export const MapExplorer = () => {
   const [agriInsights, setAgriInsights] = useState(null);
   const [agriError, setAgriError] = useState('');
   const [analysisImageBase64, setAnalysisImageBase64] = useState('');
+  const [timeline, setTimeline] = useState([]);
+  const [timelineError, setTimelineError] = useState('');
 
   const mapContainerRef = useRef(null);
   const mapInstanceRef = useRef(null);
@@ -374,119 +217,9 @@ export const MapExplorer = () => {
     setAgriInsights(null);
     setAgriError('');
     setAnalysisImageBase64('');
+    setTimeline([]);
+    setTimelineError('');
     clearSelectionRectangle();
-  };
-
-  const toBoundsPayload = (bounds) => {
-    const nw = bounds.getNorthWest();
-    const ne = bounds.getNorthEast();
-    const sw = bounds.getSouthWest();
-    const se = bounds.getSouthEast();
-    const center = bounds.getCenter();
-
-    return {
-      northWest: [nw.lat, nw.lng],
-      northEast: [ne.lat, ne.lng],
-      southWest: [sw.lat, sw.lng],
-      southEast: [se.lat, se.lng],
-      center: [center.lat, center.lng]
-    };
-  };
-
-  const fetchEarthSearchItem = async (selectionBounds) => {
-    const geometry = buildSelectionFeature(selectionBounds).geometry;
-    const response = await fetch(EARTH_SEARCH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        collections: ['sentinel-2-l2a', 'sentinel-2-c1-l2a'],
-        intersects: geometry,
-        datetime: getDateRange(180),
-        limit: 25
-      })
-    });
-
-    if (!response.ok) {
-      const detail = await extractErrorText(response);
-      throw new Error(`Sentinel scene search failed: ${detail}`);
-    }
-
-    const searchPayload = await response.json();
-    const features = Array.isArray(searchPayload?.features) ? searchPayload.features : [];
-    if (!features.length) {
-      throw new Error('No Sentinel-2 scene found for selected area and date range.');
-    }
-
-    const ranked = [...features]
-      .map((item) => ({ item, cloud: toNumber(item?.properties?.['eo:cloud_cover'], 999) }))
-      .sort((a, b) => a.cloud - b.cloud);
-
-    const withBands = ranked.find(({ item }) => selectAssetPair(item.assets));
-    if (!withBands) {
-      throw new Error('No Sentinel scene with usable red and NIR bands was found.');
-    }
-
-    const item = withBands.item;
-    const pair = selectAssetPair(item.assets);
-
-    const itemUrl =
-      item.links?.find((link) => link.rel === 'self')?.href ||
-      `https://earth-search.aws.element84.com/v1/collections/${item.collection}/items/${item.id}`;
-
-    return {
-      id: item.id,
-      itemUrl,
-      datetime: item.properties?.datetime || null,
-      cloudCover: toNumber(item.properties?.['eo:cloud_cover'], 0),
-      redAsset: pair.red,
-      nirAsset: pair.nir
-    };
-  };
-
-  const fetchTrueNdviStats = async (selectionBounds) => {
-    const scene = await fetchEarthSearchItem(selectionBounds);
-    const geometry = buildSelectionFeature(selectionBounds);
-
-    const params = new URLSearchParams();
-    params.set('url', scene.itemUrl);
-    params.append('assets', scene.redAsset);
-    params.append('assets', scene.nirAsset);
-    // Use positional band names (b1, b2) to avoid parser issues with asset key names.
-    // Asset order is red first, nir second.
-    params.set('asset_as_band', 'false');
-    params.set('expression', '(b2-b1)/(b2+b1)');
-
-    const response = await fetch(`${TITILER_STATS_URL}?${params.toString()}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(geometry)
-    });
-
-    if (!response.ok) {
-      const detail = await extractErrorText(response);
-      throw new Error(`NDVI statistics request failed: ${detail}`);
-    }
-
-    const payload = await response.json();
-    let stats;
-    try {
-      stats = parseTitilerStats(payload);
-    } catch (error) {
-      const snippet = JSON.stringify(payload)?.slice(0, 320) || 'empty response';
-      throw new Error(`Could not parse NDVI statistics response. Payload: ${snippet}`);
-    }
-
-    return {
-      stats,
-      source: {
-        provider: 'Sentinel-2 L2A (Earth Search + TiTiler)',
-        sceneId: scene.id,
-        acquiredAt: scene.datetime,
-        cloudCover: scene.cloudCover,
-        redAsset: scene.redAsset,
-        nirAsset: scene.nirAsset
-      }
-    };
   };
 
   const processSelectionNdvi = async (selectionBounds) => {
@@ -498,14 +231,32 @@ export const MapExplorer = () => {
     setAgriInsights(null);
     setAgriError('');
     setAnalysisImageBase64('');
+    setTimeline([]);
+    setTimelineError('');
 
     try {
-      const { stats, source } = await fetchTrueNdviStats(selectionBounds);
+      const currentPayload = await fetchCurrentNdvi({ selectionBounds, daysBack: 180 });
+      const stats = currentPayload?.stats || null;
+      if (!stats) {
+        throw new Error('No NDVI stats returned.');
+      }
+
       setComputedStats(stats);
-      const classification = classifyLandByNdvi(stats);
-      setLandClassification(classification);
-      setNdviSource(source);
-      setAnalysisImageBase64(createAnalysisPlaceholderImage(stats.mean));
+      setLandClassification(classifyLandByNdvi(stats));
+      setNdviSource(currentPayload?.source || null);
+      setAnalysisImageBase64(createAnalysisPlaceholderImage(Number(stats.mean || 0)));
+
+      try {
+        const timelinePayload = await fetchNdviTimeline({ selectionBounds, years: 5 });
+        setTimeline(Array.isArray(timelinePayload?.timeline) ? timelinePayload.timeline : []);
+      } catch (timelineLoadError) {
+        setTimeline([]);
+        setTimelineError(
+          timelineLoadError instanceof Error
+            ? timelineLoadError.message
+            : 'Could not load NDVI timeline.'
+        );
+      }
 
       try {
         const insights = await fetchAgricultureInsights({
@@ -514,24 +265,24 @@ export const MapExplorer = () => {
         });
         setAgriInsights(insights);
         setAgriError('');
-      } catch (error) {
+      } catch (insightError) {
         setAgriInsights(null);
-        setAgriError(error instanceof Error ? error.message : 'Failed to generate agricultural insights.');
+        setAgriError(
+          insightError instanceof Error
+            ? insightError.message
+            : 'Failed to generate agricultural insights.'
+        );
       }
     } catch (error) {
-      console.warn('True NDVI processing failed.', error);
-      const hint =
-        error instanceof TypeError && error.message === 'Failed to fetch'
-          ? 'Network or proxy error. Ensure internet is available and restart Vite dev server.'
-          : null;
       setComputedStats(null);
       setLandClassification({
         label: 'Unavailable',
         confidence: 0,
-        reason: 'True NDVI could not be computed for this area right now.'
+        reason: 'True NDVI could not be computed for this area right now.',
       });
       setNdviSource(null);
-      setNdviError(hint || (error instanceof Error ? error.message : 'Unknown NDVI error'));
+      setTimeline([]);
+      setNdviError(error instanceof Error ? error.message : 'Unknown NDVI error');
       setAgriInsights(null);
       setAgriError('');
     } finally {
@@ -556,6 +307,8 @@ export const MapExplorer = () => {
       setAgriInsights(null);
       setAgriError('');
       setAnalysisImageBase64('');
+      setTimeline([]);
+      setTimelineError('');
       clearSelectionRectangle();
       return;
     }
@@ -564,10 +317,7 @@ export const MapExplorer = () => {
     const end = clickedPoint;
 
     updateSelectionEnd(end);
-    const bounds = L.latLngBounds(
-      L.latLng(start[0], start[1]),
-      L.latLng(end[0], end[1])
-    );
+    const bounds = L.latLngBounds(L.latLng(start[0], start[1]), L.latLng(end[0], end[1]));
 
     const payload = toBoundsPayload(bounds);
     setSelectedBounds(payload);
@@ -577,7 +327,7 @@ export const MapExplorer = () => {
         color: '#22c55e',
         weight: 2,
         fillColor: '#22c55e',
-        fillOpacity: 0.15
+        fillOpacity: 0.14,
       }).addTo(mapInstanceRef.current);
     }
 
@@ -597,54 +347,38 @@ export const MapExplorer = () => {
     setResult(null);
 
     try {
-      const coordMatch = query.match(
-        /^\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)\\s*$/
-      );
-      if (coordMatch) {
-        const coords = [parseFloat(coordMatch[1]), parseFloat(coordMatch[2])];
-        if (Number.isFinite(coords[0]) && Number.isFinite(coords[1])) {
-          setActiveLocation({ name: 'Custom Coordinates', coords });
-          resetSelectionState();
-          if (mapInstanceRef.current) {
-            mapInstanceRef.current.flyTo(coords, 13, { duration: 1.2 });
-          }
-          return;
+      const directCoords = parseLatLngQuery(query);
+      if (directCoords) {
+        setActiveLocation({ name: 'Custom Coordinates', coords: directCoords });
+        resetSelectionState();
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.flyTo(directCoords, 13, { duration: 1.2 });
         }
+        return;
       }
 
-      const response = await fetch(
-        `${NOMINATIM_URL}?format=jsonv2&addressdetails=1&limit=1&q=${encodeURIComponent(query)}`
-      );
-      if (!response.ok) {
-        const message = await response.text();
-        throw new Error(`Location lookup failed (${response.status}): ${message || 'Unknown error'}`);
-      }
-
-      const results = await response.json();
-      if (!results.length) {
+      const payload = await searchLocation(query);
+      if (!Array.isArray(payload?.items) || !payload.items.length) {
         setSearchError('No matching location found.');
         return;
       }
 
-      const match = results[0];
-      const coords = [parseFloat(match.lat), parseFloat(match.lon)];
-      const label = (match.display_name || query).split(',').slice(0, 2).join(',').trim();
+      const match = payload.items[0];
+      const coords = [Number(match.coords[0]), Number(match.coords[1])];
+      const label = (match.name || query).split(',').slice(0, 2).join(',').trim();
 
       setActiveLocation({ name: label || query, coords });
       resetSelectionState();
-
       if (mapInstanceRef.current) {
         mapInstanceRef.current.flyTo(coords, 13, { duration: 1.2 });
       }
     } catch (error) {
-      console.error(error);
       setSearchError(error instanceof Error ? error.message : 'Search failed. Try another location.');
     } finally {
       setIsSearching(false);
     }
   };
 
-  // Initialize Map
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
@@ -652,14 +386,11 @@ export const MapExplorer = () => {
     const layerConfig = MAP_LAYERS.find((layer) => layer.id === activeBaseLayer) || MAP_LAYERS[1];
     tileLayerRef.current = L.tileLayer(layerConfig.url, {
       attribution: layerConfig.attribution,
-      maxZoom: 19
+      maxZoom: 19,
     }).addTo(map);
 
     mapInstanceRef.current = map;
-
-    setTimeout(() => {
-      map.invalidateSize();
-    }, 100);
+    setTimeout(() => map.invalidateSize(), 120);
 
     map.on('click', handleMapClick);
 
@@ -667,15 +398,17 @@ export const MapExplorer = () => {
       map.off('click', handleMapClick);
       map.remove();
       mapInstanceRef.current = null;
+      tileLayerRef.current = null;
+      selectionRectRef.current = null;
     };
   }, []);
 
   useEffect(() => {
     if (!tileLayerRef.current) return;
     const layerConfig = MAP_LAYERS.find((layer) => layer.id === activeBaseLayer);
-    if (layerConfig) {
-      tileLayerRef.current.setUrl(layerConfig.url);
-    }
+    if (!layerConfig) return;
+    tileLayerRef.current.setUrl(layerConfig.url);
+    tileLayerRef.current.options.attribution = layerConfig.attribution;
   }, [activeBaseLayer]);
 
   const handleAnalyze = async () => {
@@ -685,24 +418,31 @@ export const MapExplorer = () => {
     const statsToUse = {
       NDVI: computedStats,
       AGRI_WEATHER: agriInsights?.weather || null,
+      NDVI_TIMELINE: timeline || [],
     };
+
     const sourceText = ndviSource
-      ? `Source: ${ndviSource.provider}, scene ${ndviSource.sceneId}, acquired ${formatDate(ndviSource.acquiredAt)}, cloud cover ${ndviSource.cloudCover.toFixed(1)}%.`
+      ? `Source: ${ndviSource.provider}, scene ${ndviSource.sceneId}, acquired ${formatDate(ndviSource.acquiredAt)}, cloud cover ${Number(ndviSource.cloudCover || 0).toFixed(1)}%.`
       : 'Source: NDVI dataset metadata unavailable.';
+
     const agriText = agriInsights
       ? `Agriculture summary: ${agriInsights.summary}. Top crop: ${agriInsights.recommendedCrops?.[0]?.name || 'NA'}. Irrigation: ${agriInsights.irrigation}.`
       : '';
 
+    const timelineText = Array.isArray(timeline) && timeline.length
+      ? `Historical NDVI timeline includes ${timeline.filter((item) => item.status === 'OK').length} valid yearly observations.`
+      : '';
+
     const locationPrompt = selectedBounds
-      ? `Analyze land for selected parcel with corners NW ${formatCoord(selectedBounds.northWest)} and SE ${formatCoord(selectedBounds.southEast)}. ${sourceText} ${agriText}`
-      : `Analyze land parcel located at ${activeLocation.coords.join(', ')}. ${sourceText} ${agriText}`;
+      ? `Analyze land for selected parcel with corners NW ${formatCoord(selectedBounds.northWest)} and SE ${formatCoord(selectedBounds.southEast)}. ${sourceText} ${agriText} ${timelineText}`
+      : `Analyze land parcel located at ${activeLocation.coords.join(', ')}. ${sourceText} ${agriText} ${timelineText}`;
 
     try {
-      const base64 = analysisImageBase64 || createAnalysisPlaceholderImage(computedStats.mean);
+      const base64 = analysisImageBase64 || createAnalysisPlaceholderImage(Number(computedStats.mean || 0));
       const analysis = await analyzeLandData(base64, locationPrompt, statsToUse);
       setResult(analysis);
-    } catch (error) {
-      console.error(error);
+    } catch (_error) {
+      // Keep UX non-blocking for this optional AI step.
     } finally {
       setIsProcessing(false);
     }
@@ -712,8 +452,10 @@ export const MapExplorer = () => {
   const selectionStatus = selectionStart && !selectionEnd
     ? 'Corner A selected. Click opposite corner to complete diagonal.'
     : selectedBounds
-      ? 'Area selected. True NDVI calculated for selected rectangle.'
+      ? 'Area selected. Current NDVI and historical timeline computed.'
       : 'Click map to select first corner of area.';
+
+  const timelineChartData = toTimelineChartData(timeline);
 
   return (
     <div className="h-full min-h-[620px] flex flex-col md:flex-row bg-slate-50/60 overflow-hidden">
@@ -721,7 +463,7 @@ export const MapExplorer = () => {
         <div className="p-5 border-b border-slate-100">
           <h2 className="font-bold text-slate-800 flex items-center mb-4">
             <Icons.Map className="w-5 h-5 mr-2 text-brand-600" />
-            Map Inspector
+            Geo-Explorer
           </h2>
 
           <form onSubmit={handleLocationSearch} className="mb-5">
@@ -731,7 +473,7 @@ export const MapExplorer = () => {
                 type="text"
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Enter city, village, or address"
+                placeholder="Enter city, village, or coordinates"
                 className="flex-1 px-3 py-2 text-xs border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500"
               />
               <button
@@ -747,7 +489,7 @@ export const MapExplorer = () => {
           </form>
 
           <div className="mb-5 p-3 rounded-lg border border-brand-100 bg-brand-50/50">
-            <p className="text-xs font-semibold text-brand-700 mb-1">Area Selection (2 clicks)</p>
+            <p className="text-xs font-semibold text-brand-700 mb-1">Area Selection</p>
             <p className="text-[11px] text-slate-600 mb-2">{selectionStatus}</p>
             <p className="text-[11px] text-slate-600">Point A: {formatCoord(selectionStart)}</p>
             <p className="text-[11px] text-slate-600">Point B: {formatCoord(selectionEnd)}</p>
@@ -765,7 +507,7 @@ export const MapExplorer = () => {
             </button>
           </div>
 
-          <div className="mb-6">
+          <div className="mb-5">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Base Map</p>
             <div className="flex bg-slate-100 p-1 rounded-lg">
               {MAP_LAYERS.map((layer) => (
@@ -785,25 +527,24 @@ export const MapExplorer = () => {
           </div>
 
           {ndviSource && (
-            <div className="mb-6 p-3 rounded-lg border border-sky-100 bg-sky-50/70">
+            <div className="mb-5 p-3 rounded-lg border border-sky-100 bg-sky-50/70">
               <p className="text-xs font-semibold text-sky-800">NDVI Source</p>
               <p className="text-[11px] text-slate-700 mt-1">{ndviSource.provider}</p>
               <p className="text-[11px] text-slate-600 mt-1">Scene: {ndviSource.sceneId}</p>
               <p className="text-[11px] text-slate-600">Date: {formatDate(ndviSource.acquiredAt)}</p>
-              <p className="text-[11px] text-slate-600">Cloud Cover: {ndviSource.cloudCover.toFixed(1)}%</p>
-              <p className="text-[11px] text-slate-600">Bands: Red={ndviSource.redAsset}, NIR={ndviSource.nirAsset}</p>
+              <p className="text-[11px] text-slate-600">Cloud Cover: {Number(ndviSource.cloudCover || 0).toFixed(1)}%</p>
             </div>
           )}
 
           {ndviError && (
-            <div className="mb-6 p-3 rounded-lg border border-rose-100 bg-rose-50/70">
+            <div className="mb-5 p-3 rounded-lg border border-rose-100 bg-rose-50/70">
               <p className="text-xs font-semibold text-rose-800">NDVI Error</p>
               <p className="text-[11px] text-rose-700 mt-1 break-words">{ndviError}</p>
             </div>
           )}
 
           {landClassification && (
-            <div className="mb-6 p-3 rounded-lg border border-emerald-100 bg-emerald-50/60">
+            <div className="mb-5 p-3 rounded-lg border border-emerald-100 bg-emerald-50/60">
               <p className="text-xs font-semibold text-emerald-800">Land Type</p>
               <p className="text-sm font-semibold text-slate-800 mt-1">{landClassification.label}</p>
               <p className="text-[11px] text-slate-600 mt-1">{landClassification.reason}</p>
@@ -813,8 +554,58 @@ export const MapExplorer = () => {
             </div>
           )}
 
+          {computedStats && (
+            <div className="mb-5 rounded-lg border border-slate-200 bg-white/80 p-3 text-xs text-slate-600">
+              <p>Mean NDVI: <span className="font-semibold text-slate-800">{Number(computedStats.mean || 0).toFixed(3)}</span></p>
+              <p className="mt-1">Min / Max: {Number(computedStats.min || 0).toFixed(3)} / {Number(computedStats.max || 0).toFixed(3)}</p>
+              <p className="mt-1">Std Dev: {Number(computedStats.stdDev || 0).toFixed(3)}</p>
+            </div>
+          )}
+
+          {selectedBounds && (
+            <div className="mb-6 animate-fade-in">
+              <div className="flex justify-between items-center mb-2">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Historical NDVI Timeline</p>
+                <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-600">Yearly</span>
+              </div>
+              {timelineChartData.length ? (
+                <div className="h-36 w-full rounded-lg border border-slate-200 bg-white/80 p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={timelineChartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.28)" />
+                      <XAxis dataKey="year" tick={{ fontSize: 11 }} />
+                      <YAxis domain={[-1, 1]} tick={{ fontSize: 11 }} />
+                      <Tooltip
+                        formatter={(value, _name, item) => {
+                          if (value === null || value === undefined) {
+                            return ['Unavailable', `Status: ${item?.payload?.status || 'UNKNOWN'}`];
+                          }
+                          return [Number(value).toFixed(3), 'Mean NDVI'];
+                        }}
+                        labelFormatter={(label) => `Year ${label}`}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="mean"
+                        stroke="#0f7db6"
+                        strokeWidth={2.5}
+                        dot={{ r: 3, strokeWidth: 2 }}
+                        connectNulls={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
+                  Timeline will appear after NDVI loads for selected region.
+                </p>
+              )}
+              {timelineError && <p className="mt-2 text-[11px] text-amber-700">{timelineError}</p>}
+            </div>
+          )}
+
           {agriInsights && (
-            <div className="mb-6 p-3 rounded-lg border border-lime-100 bg-lime-50/60">
+            <div className="mb-5 p-3 rounded-lg border border-lime-100 bg-lime-50/60">
               <p className="text-xs font-semibold text-lime-800">Agricultural Insights</p>
               <p className="text-[11px] text-slate-700 mt-1">{agriInsights.summary}</p>
               <p className="text-[11px] text-slate-700 mt-2">
@@ -831,44 +622,13 @@ export const MapExplorer = () => {
                   </span>
                 ))}
               </div>
-              {Array.isArray(agriInsights.risks) && agriInsights.risks.length > 0 && (
-                <p className="text-[11px] text-amber-700 mt-2">Risk: {agriInsights.risks[0]}</p>
-              )}
             </div>
           )}
 
           {agriError && (
-            <div className="mb-6 p-3 rounded-lg border border-amber-100 bg-amber-50/70">
+            <div className="mb-5 p-3 rounded-lg border border-amber-100 bg-amber-50/70">
               <p className="text-xs font-semibold text-amber-800">Agricultural Insights Error</p>
               <p className="text-[11px] text-amber-700 mt-1 break-words">{agriError}</p>
-            </div>
-          )}
-
-          {computedStats && (
-            <div className="mb-6 animate-fade-in">
-              <div className="flex justify-between items-center mb-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">True NDVI Distribution</p>
-                <span className="text-[10px] bg-slate-100 px-2 py-0.5 rounded text-slate-600">B08/B04</span>
-              </div>
-              <div className="h-32 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={computedStats.histogram}>
-                    <Tooltip
-                      cursor={{ fill: 'transparent' }}
-                      contentStyle={{ fontSize: '12px', borderRadius: '4px', border: 'none', boxShadow: '0 2px 5px rgba(0,0,0,0.1)' }}
-                    />
-                    <Bar dataKey="count" radius={[2, 2, 0, 0]}>
-                      {computedStats.histogram.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={STAT_COLORS[index % 5]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mt-2 text-[11px] text-slate-600">
-                <span>Mean: {computedStats.mean.toFixed(3)}</span>
-                <span>StdDev: {computedStats.stdDev.toFixed(3)}</span>
-              </div>
             </div>
           )}
 
@@ -878,9 +638,15 @@ export const MapExplorer = () => {
             className="w-full py-3 bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 text-white rounded-xl shadow-lg font-semibold flex items-center justify-center transition-all disabled:opacity-70 disabled:grayscale"
           >
             {isProcessing ? (
-              <><Icons.Spinner className="w-5 h-5 mr-2 animate-spin" /> Processing NDVI...</>
+              <>
+                <Icons.Spinner className="w-5 h-5 mr-2 animate-spin" />
+                Processing NDVI...
+              </>
             ) : (
-              <><Icons.AI className="w-5 h-5 mr-2" /> AI Verification</>
+              <>
+                <Icons.AI className="w-5 h-5 mr-2" />
+                AI Verification
+              </>
             )}
           </button>
         </div>
@@ -927,9 +693,7 @@ export const MapExplorer = () => {
           <div className="text-xs font-bold text-slate-700 mb-2">Active Region</div>
           <div className="flex items-center gap-2">
             <Icons.Map className="w-4 h-4 text-brand-600" />
-            <span className="text-xs text-slate-600">
-              {selectedBounds ? 'Selected Area' : activeLocation.name}
-            </span>
+            <span className="text-xs text-slate-600">{selectedBounds ? 'Selected Area' : activeLocation.name}</span>
             <span className="text-[10px] text-slate-400 font-mono">
               {activeCoords[0].toFixed(2)}, {activeCoords[1].toFixed(2)}
             </span>

@@ -17,6 +17,11 @@ const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'http://127.0.0.1:3000,http://l
   .split(',')
   .map((item) => item.trim())
   .filter(Boolean);
+const CORS_ALLOW_ALL = CORS_ORIGINS.includes('*');
+const EARTH_SEARCH_BASE_URL = process.env.EARTH_SEARCH_BASE_URL || 'https://earth-search.aws.element84.com/v1';
+const TITILER_STATS_URL = process.env.TITILER_STATS_URL || 'https://titiler.xyz/stac/statistics';
+const NOMINATIM_SEARCH_URL = process.env.NOMINATIM_SEARCH_URL || 'https://nominatim.openstreetmap.org/search';
+const NDVI_TIMELINE_YEARS = Math.max(3, Math.min(Number(process.env.NDVI_TIMELINE_YEARS || 5), 10));
 
 const app = express();
 
@@ -24,7 +29,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || CORS_ORIGINS.includes(origin)) {
+      if (!origin || CORS_ALLOW_ALL || CORS_ORIGINS.includes(origin)) {
         callback(null, true);
         return;
       }
@@ -39,6 +44,42 @@ const USER_ROLES = new Set(['USER', 'EMPLOYEE']);
 const EMPLOYEE_SIGNUP_CODE = String(process.env.EMPLOYEE_SIGNUP_CODE || '').trim();
 const EMPLOYEE_ID_REGEX = /^1947\d{4,}$/;
 const CLAIM_STATUSES = new Set(['PENDING', 'FLAGGED', 'APPROVED', 'REJECTED']);
+const BOUNDARY_STATUSES = new Set(['ACTIVE', 'REMOVED']);
+const CHANDANNAGAR_PRESET_BOUNDARIES = [
+  {
+    code: 'CHN-WB-PB-001',
+    name: 'Chandannagar Riverfront Parcel A',
+    location: 'Chandannagar, Kolkata, West Bengal',
+    polygon: [
+      [22.86852, 88.36371],
+      [22.86842, 88.36606],
+      [22.86639, 88.36598],
+      [22.86648, 88.36359],
+    ],
+  },
+  {
+    code: 'CHN-WB-PB-002',
+    name: 'Chandannagar Civic Parcel B',
+    location: 'Chandannagar, Kolkata, West Bengal',
+    polygon: [
+      [22.87123, 88.36672],
+      [22.87111, 88.36913],
+      [22.86885, 88.36903],
+      [22.86896, 88.36662],
+    ],
+  },
+  {
+    code: 'CHN-WB-PB-003',
+    name: 'Chandannagar Residential Parcel C',
+    location: 'Chandannagar, Kolkata, West Bengal',
+    polygon: [
+      [22.86515, 88.36704],
+      [22.86503, 88.36931],
+      [22.86286, 88.36921],
+      [22.86298, 88.36695],
+    ],
+  },
+];
 
 const normalizeRole = (value) => {
   const role = String(value || '').trim().toUpperCase();
@@ -56,12 +97,33 @@ const httpError = (status, message) => {
   return error;
 };
 
+const stableStringify = (value) => {
+  if (value === undefined) return 'null';
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value)
+      .sort()
+      .map((key) => `"${key}":${stableStringify(value[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const hashBlockPayload = (block, serializer) =>
+  `${block.index}|${block.timestamp}|${block.eventType}|${serializer(block.payload)}|${block.previousHash}|${block.nonce}`;
+
 const hashBlock = (block) =>
   crypto
     .createHash('sha256')
-    .update(
-      `${block.index}|${block.timestamp}|${block.eventType}|${JSON.stringify(block.payload)}|${block.previousHash}|${block.nonce}`
-    )
+    .update(hashBlockPayload(block, stableStringify))
+    .digest('hex');
+
+const hashBlockLegacy = (block) =>
+  crypto
+    .createHash('sha256')
+    .update(hashBlockPayload(block, (payload) => JSON.stringify(payload)))
     .digest('hex');
 
 const createGenesisBlock = () => {
@@ -196,16 +258,18 @@ const verifyChainIntegrity = (chain) => {
 
   for (let i = 0; i < chain.length; i += 1) {
     const current = chain[i];
-    const expectedHash = hashBlock({
+    const base = {
       index: current.index,
       timestamp: current.timestamp,
       eventType: current.eventType,
       payload: current.payload,
       previousHash: current.previousHash,
       nonce: current.nonce,
-    });
+    };
+    const expectedHash = hashBlock(base);
+    const legacyExpectedHash = hashBlockLegacy(base);
 
-    if (current.hash !== expectedHash) {
+    if (current.hash !== expectedHash && current.hash !== legacyExpectedHash) {
       return { valid: false, reason: `Hash mismatch at block ${i}` };
     }
 
@@ -296,6 +360,12 @@ const DISPUTE_TYPES = new Set([
 const DISPUTE_PRIORITIES = new Set(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
 
 const normalizeToken = (value) => String(value || '').trim().toUpperCase().replaceAll(' ', '_');
+const sanitizeBoundaryCode = (value) =>
+  String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9-]/g, '')
+    .slice(0, 32);
 
 const sanitizeEvidenceUrls = (value) => {
   if (!Array.isArray(value)) return [];
@@ -303,19 +373,6 @@ const sanitizeEvidenceUrls = (value) => {
     .map((item) => String(item || '').trim())
     .filter((item) => item.length > 0)
     .slice(0, 8);
-};
-
-const stableStringify = (value) => {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(',')}]`;
-  }
-  if (value && typeof value === 'object') {
-    const entries = Object.keys(value)
-      .sort()
-      .map((key) => `"${key}":${stableStringify(value[key])}`);
-    return `{${entries.join(',')}}`;
-  }
-  return JSON.stringify(value);
 };
 
 const sha256Hex = (value) =>
@@ -356,6 +413,24 @@ const sanitizeSelectionBounds = (value) => {
     southEast,
     center: derivedCenter,
   };
+};
+
+const selectionBoundsToPolygon = (selectionBounds) => {
+  if (!selectionBounds) return null;
+  const points = [
+    selectionBounds.northWest,
+    selectionBounds.northEast,
+    selectionBounds.southEast,
+    selectionBounds.southWest,
+  ];
+  return sanitizePolygon(points);
+};
+
+const readPolygonFromPayload = (payload) => {
+  const polygon = sanitizePolygon(payload?.polygon);
+  if (polygon) return polygon;
+  const selectionBounds = sanitizeSelectionBounds(payload?.selectionBounds);
+  return selectionBoundsToPolygon(selectionBounds);
 };
 
 const sanitizePolygon = (value) => {
@@ -640,6 +715,428 @@ const toLandClaimRecord = (row) => ({
   },
 });
 
+const toGovBoundaryRecord = (row) => ({
+  id: row.id,
+  code: row.code || '',
+  name: row.name || 'Unnamed boundary',
+  location: row.location || 'Unknown location',
+  polygon: Array.isArray(row.polygon) ? row.polygon : [],
+  centroid: [Number(row.centroid_lat), Number(row.centroid_lng)],
+  areaSqM: Number(row.area_sq_m || 0),
+  status: row.status || 'ACTIVE',
+  isPreset: Boolean(row.is_preset),
+  createdBy: row.created_by
+    ? {
+        id: row.created_by,
+        name: row.creator_name || 'Unknown',
+        email: row.creator_email || null,
+      }
+    : null,
+  createdAt: toIso(row.created_at),
+  updatedAt: toIso(row.updated_at),
+  ledgerBlock: {
+    index: row.ledger_block_index,
+    hash: row.ledger_block_hash,
+  },
+});
+
+const loadGovBoundaries = async ({ includeRemoved = false } = {}) => {
+  const whereSql = includeRemoved ? '' : "WHERE gb.status = 'ACTIVE'";
+  const result = await query(
+    `
+      SELECT
+        gb.*,
+        u.name AS creator_name,
+        u.email AS creator_email
+      FROM gov_boundaries gb
+      LEFT JOIN users u ON u.id = gb.created_by
+      ${whereSql}
+      ORDER BY gb.is_preset DESC, gb.updated_at DESC
+      LIMIT 800
+    `
+  );
+  return result.rows.map(toGovBoundaryRecord);
+};
+
+const toFiniteNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const fallbackHistogram = (mean) => {
+  const buckets = new Array(10).fill(0);
+  const idx = clampNumber(Math.floor(((mean + 1) / 2) * 10), 0, 9);
+  buckets[idx] = 1;
+  return buckets.map((count, i) => ({
+    bin: Number((-1 + i * 0.2).toFixed(2)),
+    count,
+  }));
+};
+
+const histogramFromTitiler = (rawHistogram, min, max, mean) => {
+  if (
+    rawHistogram &&
+    typeof rawHistogram === 'object' &&
+    !Array.isArray(rawHistogram) &&
+    Array.isArray(rawHistogram.bins) &&
+    Array.isArray(rawHistogram.counts)
+  ) {
+    const edges = rawHistogram.bins;
+    const counts = rawHistogram.counts;
+    if (counts.length > 0) {
+      return counts.map((count, idx) => {
+        const hasEdgePairs = edges.length === counts.length + 1;
+        const center = hasEdgePairs
+          ? (toFiniteNumber(edges[idx]) + toFiniteNumber(edges[idx + 1])) / 2
+          : min + ((idx + 0.5) * (max - min)) / counts.length;
+
+        return {
+          bin: Number(clampNumber(center, -1, 1).toFixed(2)),
+          count: toFiniteNumber(count),
+        };
+      });
+    }
+  }
+
+  if (
+    Array.isArray(rawHistogram) &&
+    rawHistogram.length === 2 &&
+    Array.isArray(rawHistogram[0]) &&
+    Array.isArray(rawHistogram[1])
+  ) {
+    const edges = rawHistogram[0];
+    const counts = rawHistogram[1];
+    if (counts.length > 0) {
+      return counts.map((count, idx) => {
+        const hasEdgePairs = edges.length === counts.length + 1;
+        const center = hasEdgePairs
+          ? (toFiniteNumber(edges[idx]) + toFiniteNumber(edges[idx + 1])) / 2
+          : min + ((idx + 0.5) * (max - min)) / counts.length;
+
+        return {
+          bin: Number(clampNumber(center, -1, 1).toFixed(2)),
+          count: toFiniteNumber(count),
+        };
+      });
+    }
+  }
+
+  return fallbackHistogram(mean);
+};
+
+const parseTitilerStats = (payload) => {
+  const candidates = [];
+  const pushCandidate = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    if (
+      Number.isFinite(toFiniteNumber(value.mean, NaN)) ||
+      Number.isFinite(toFiniteNumber(value.min, NaN)) ||
+      Number.isFinite(toFiniteNumber(value.max, NaN))
+    ) {
+      candidates.push(value);
+    }
+  };
+
+  const walk = (node, depth = 0) => {
+    if (!node || depth > 6) return;
+    if (Array.isArray(node)) {
+      node.forEach((item) => walk(item, depth + 1));
+      return;
+    }
+    if (typeof node !== 'object') return;
+    pushCandidate(node);
+    Object.values(node).forEach((item) => walk(item, depth + 1));
+  };
+  walk(payload);
+
+  const stat = candidates
+    .sort((a, b) => {
+      const scoreA =
+        Number.isFinite(toFiniteNumber(a.min, NaN)) +
+        Number.isFinite(toFiniteNumber(a.max, NaN)) +
+        Number.isFinite(toFiniteNumber(a.mean, NaN)) +
+        (a.histogram ? 1 : 0);
+      const scoreB =
+        Number.isFinite(toFiniteNumber(b.min, NaN)) +
+        Number.isFinite(toFiniteNumber(b.max, NaN)) +
+        Number.isFinite(toFiniteNumber(b.mean, NaN)) +
+        (b.histogram ? 1 : 0);
+      return scoreB - scoreA;
+    })[0];
+
+  if (!stat) {
+    throw new Error('Could not parse NDVI statistics response.');
+  }
+
+  const min = clampNumber(toFiniteNumber(stat.min, -1), -1, 1);
+  const max = clampNumber(toFiniteNumber(stat.max, 1), -1, 1);
+  const mean = clampNumber(toFiniteNumber(stat.mean, 0), -1, 1);
+  const stdDev = toFiniteNumber(stat.std, toFiniteNumber(stat.stdev, toFiniteNumber(stat.stdDev, 0)));
+  const histogram = histogramFromTitiler(stat.histogram, min, max, mean);
+
+  return {
+    min: Number(min.toFixed(4)),
+    max: Number(max.toFixed(4)),
+    mean: Number(mean.toFixed(4)),
+    stdDev: Number(stdDev.toFixed(4)),
+    histogram,
+  };
+};
+
+const extractApiErrorText = async (response) => {
+  try {
+    const payload = await response.json();
+    if (payload?.detail) {
+      return typeof payload.detail === 'string' ? payload.detail : JSON.stringify(payload.detail);
+    }
+    if (payload?.message) return String(payload.message);
+    return JSON.stringify(payload);
+  } catch (_error) {
+    try {
+      return await response.text();
+    } catch (_innerError) {
+      return 'Unknown API error';
+    }
+  }
+};
+
+const buildSelectionFeatureFromPolygon = (polygon) => {
+  const ring = polygon.map(([lat, lng]) => [lng, lat]);
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (!first || !last) {
+    throw new Error('Invalid polygon ring.');
+  }
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    ring.push([first[0], first[1]]);
+  }
+  return {
+    type: 'Feature',
+    properties: {},
+    geometry: {
+      type: 'Polygon',
+      coordinates: [ring],
+    },
+  };
+};
+
+const buildBboxFromPolygon = (polygon) => {
+  const bounds = polygonBounds(polygon);
+  return [bounds.minLng, bounds.minLat, bounds.maxLng, bounds.maxLat];
+};
+
+const selectAssetPair = (assets = {}) => {
+  const keys = Object.keys(assets);
+  const redCandidates = ['red', 'B04', 'b04', 'red-jp2'];
+  const nirCandidates = ['nir', 'nir08', 'B08', 'b08', 'nir08-jp2', 'nir-jp2'];
+  const red = redCandidates.find((key) => keys.includes(key));
+  const nir = nirCandidates.find((key) => keys.includes(key));
+  if (!red || !nir) return null;
+  return { red, nir };
+};
+
+const getDateRangeIso = ({ start, end }) => `${start.toISOString()}/${end.toISOString()}`;
+
+const fetchEarthSearchScene = async ({ polygon, datetime }) => {
+  const geometry = buildSelectionFeatureFromPolygon(polygon).geometry;
+  const response = await fetch(`${EARTH_SEARCH_BASE_URL}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      collections: ['sentinel-2-l2a', 'sentinel-2-c1-l2a'],
+      intersects: geometry,
+      bbox: buildBboxFromPolygon(polygon),
+      datetime,
+      limit: 35,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await extractApiErrorText(response);
+    throw new Error(`Sentinel scene search failed: ${detail}`);
+  }
+
+  const payload = await response.json();
+  const features = Array.isArray(payload?.features) ? payload.features : [];
+  if (!features.length) {
+    throw new Error('No Sentinel-2 scene found for selected area and date range.');
+  }
+
+  const ranked = [...features]
+    .map((item) => ({ item, cloud: toFiniteNumber(item?.properties?.['eo:cloud_cover'], 999) }))
+    .sort((a, b) => a.cloud - b.cloud);
+  const withBands = ranked.find(({ item }) => selectAssetPair(item.assets));
+  if (!withBands) {
+    throw new Error('No Sentinel-2 scene with usable red and NIR bands.');
+  }
+
+  const pair = selectAssetPair(withBands.item.assets);
+  const itemUrl =
+    withBands.item.links?.find((link) => link.rel === 'self')?.href ||
+    `${EARTH_SEARCH_BASE_URL}/collections/${withBands.item.collection}/items/${withBands.item.id}`;
+
+  return {
+    id: withBands.item.id,
+    datetime: withBands.item.properties?.datetime || null,
+    cloudCover: toFiniteNumber(withBands.item.properties?.['eo:cloud_cover'], 0),
+    redAsset: pair.red,
+    nirAsset: pair.nir,
+    itemUrl,
+  };
+};
+
+const fetchNdviStatsFromTitiler = async ({ polygon, scene }) => {
+  const params = new URLSearchParams();
+  params.set('url', scene.itemUrl);
+  params.append('assets', scene.redAsset);
+  params.append('assets', scene.nirAsset);
+  params.set('asset_as_band', 'false');
+  params.set('expression', '(b2-b1)/(b2+b1)');
+
+  const response = await fetch(`${TITILER_STATS_URL}?${params.toString()}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildSelectionFeatureFromPolygon(polygon)),
+  });
+
+  if (!response.ok) {
+    const detail = await extractApiErrorText(response);
+    throw new Error(`NDVI statistics request failed: ${detail}`);
+  }
+
+  const payload = await response.json();
+  return parseTitilerStats(payload);
+};
+
+const getRollingDateRange = (daysBack = 180) => {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(start.getDate() - daysBack);
+  return getDateRangeIso({ start, end });
+};
+
+const computeNdviForPolygon = async ({ polygon, datetime }) => {
+  const scene = await fetchEarthSearchScene({ polygon, datetime });
+  const stats = await fetchNdviStatsFromTitiler({ polygon, scene });
+  return {
+    stats,
+    source: {
+      provider: 'Sentinel-2 L2A (Earth Search + TiTiler)',
+      sceneId: scene.id,
+      acquiredAt: scene.datetime,
+      cloudCover: scene.cloudCover,
+      redAsset: scene.redAsset,
+      nirAsset: scene.nirAsset,
+    },
+  };
+};
+
+const computeNdviTimeline = async (polygon, years = NDVI_TIMELINE_YEARS) => {
+  const now = new Date();
+  const currentYear = now.getUTCFullYear();
+  const startYear = currentYear - years + 1;
+  const timeline = [];
+
+  for (let year = startYear; year <= currentYear; year += 1) {
+    const start = new Date(Date.UTC(year, 0, 1, 0, 0, 0));
+    const end = year === currentYear ? now : new Date(Date.UTC(year, 11, 31, 23, 59, 59));
+    const datetime = getDateRangeIso({ start, end });
+    try {
+      const { stats, source } = await computeNdviForPolygon({ polygon, datetime });
+      timeline.push({
+        year,
+        status: 'OK',
+        mean: stats.mean,
+        min: stats.min,
+        max: stats.max,
+        stdDev: stats.stdDev,
+        source,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Timeline NDVI failed';
+      timeline.push({
+        year,
+        status: message.includes('No Sentinel-2 scene') ? 'NO_SCENE' : 'ERROR',
+        mean: null,
+        min: null,
+        max: null,
+        stdDev: null,
+        source: null,
+        reason: message.slice(0, 240),
+      });
+    }
+  }
+
+  return timeline;
+};
+
+const ensureGovBoundaryPresets = async () => {
+  const presetCodes = CHANDANNAGAR_PRESET_BOUNDARIES.map((item) => item.code);
+  const existing = await query(
+    `
+      SELECT code
+      FROM gov_boundaries
+      WHERE code = ANY($1::text[])
+    `,
+    [presetCodes]
+  );
+  const existingCodes = new Set(existing.rows.map((row) => row.code));
+  const missing = CHANDANNAGAR_PRESET_BOUNDARIES.filter((item) => !existingCodes.has(item.code));
+  if (!missing.length) return;
+
+  await withTransaction(async (client) => {
+    for (const preset of missing) {
+      const polygon = sanitizePolygon(preset.polygon);
+      if (!polygon) continue;
+      const centroid = polygonCentroid(polygon) || polygon[0];
+      const areaSqM = Number(polygonAreaSqM(polygon).toFixed(3));
+      const now = new Date().toISOString();
+      const boundaryId = crypto.randomUUID();
+
+      const block = await insertChainBlock(client, 'GOV_BOUNDARY_PRESET_ADDED', {
+        boundaryId,
+        code: preset.code,
+        name: preset.name,
+        location: preset.location,
+        areaSqM,
+      });
+
+      await client.query(
+        `
+          INSERT INTO gov_boundaries (
+            id, code, name, location, polygon,
+            centroid_lat, centroid_lng, area_sq_m,
+            status, is_preset, created_by,
+            created_at, updated_at,
+            ledger_block_index, ledger_block_hash
+          )
+          VALUES (
+            $1, $2, $3, $4, $5::jsonb,
+            $6, $7, $8,
+            'ACTIVE', true, NULL,
+            $9, $9,
+            $10, $11
+          )
+          ON CONFLICT (code) DO NOTHING
+        `,
+        [
+          boundaryId,
+          preset.code,
+          preset.name,
+          preset.location,
+          JSON.stringify(polygon),
+          centroid[0],
+          centroid[1],
+          areaSqM,
+          now,
+          block.index,
+          block.hash,
+        ]
+      );
+    }
+  });
+};
+
 const detectClaimOverlaps = async ({ polygon, pid, requesterUserId }) => {
   const overlapFlags = [];
 
@@ -664,6 +1161,25 @@ const detectClaimOverlaps = async ({ polygon, pid, requesterUserId }) => {
         ownerUserId: parcel.owner_user_id,
         ownerName: parcel.owner_name || null,
         ownerEmail: parcel.owner_email || null,
+      });
+    }
+  }
+
+  const boundaryResult = await query(
+    `
+      SELECT id, code, name, location, polygon
+      FROM gov_boundaries
+      WHERE status = 'ACTIVE'
+    `
+  );
+  for (const boundary of boundaryResult.rows) {
+    if (polygonsOverlap(polygon, Array.isArray(boundary.polygon) ? boundary.polygon : [])) {
+      overlapFlags.push({
+        type: 'GOV_BOUNDARY_OVERLAP',
+        targetId: boundary.id,
+        boundaryCode: boundary.code,
+        boundaryName: boundary.name,
+        location: boundary.location,
       });
     }
   }
@@ -902,15 +1418,17 @@ app.get('/api/health', async (_req, res) => {
       totalDisputes: 0,
       totalClaims: 0,
       totalParcels: 0,
+      totalBoundaries: 0,
     });
     return;
   }
 
   const chain = await getChainBlocks();
-  const [disputeCountResult, claimCountResult, parcelCountResult] = await Promise.all([
+  const [disputeCountResult, claimCountResult, parcelCountResult, boundaryCountResult] = await Promise.all([
     query('SELECT COUNT(*)::int AS count FROM land_disputes'),
     query('SELECT COUNT(*)::int AS count FROM land_claims'),
     query('SELECT COUNT(*)::int AS count FROM owned_parcels'),
+    query("SELECT COUNT(*)::int AS count FROM gov_boundaries WHERE status = 'ACTIVE'"),
   ]);
   const integrity = verifyChainIntegrity(chain);
   res.json({
@@ -922,7 +1440,103 @@ app.get('/api/health', async (_req, res) => {
     totalDisputes: disputeCountResult.rows[0]?.count || 0,
     totalClaims: claimCountResult.rows[0]?.count || 0,
     totalParcels: parcelCountResult.rows[0]?.count || 0,
+    totalBoundaries: boundaryCountResult.rows[0]?.count || 0,
   });
+});
+
+app.get('/api/geo/search', authMiddleware, async (req, res) => {
+  try {
+    const q = String(req.query?.q || '').trim();
+    if (!q || q.length < 2) {
+      res.status(400).json({ message: 'q must be at least 2 characters.' });
+      return;
+    }
+
+    const url = new URL(NOMINATIM_SEARCH_URL);
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('addressdetails', '1');
+    url.searchParams.set('limit', '5');
+    url.searchParams.set('q', q);
+
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'root-land-platform/1.0',
+      },
+    });
+    if (!response.ok) {
+      const detail = await extractApiErrorText(response);
+      throw new Error(`Location search failed: ${detail}`);
+    }
+
+    const payload = await response.json();
+    const items = Array.isArray(payload)
+      ? payload
+          .map((item) => {
+            const lat = Number(item.lat);
+            const lng = Number(item.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            return {
+              name: String(item.display_name || '').trim(),
+              coords: [Number(lat.toFixed(6)), Number(lng.toFixed(6))],
+              class: item.class || null,
+              type: item.type || null,
+            };
+          })
+          .filter(Boolean)
+      : [];
+
+    res.json({ items });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to search location.', error: error.message });
+  }
+});
+
+app.post('/api/ndvi/current', authMiddleware, async (req, res) => {
+  try {
+    const polygon = readPolygonFromPayload(req.body);
+    if (!polygon) {
+      res.status(400).json({ message: 'Valid polygon (or selectionBounds) is required.' });
+      return;
+    }
+    const daysBack = clampNumber(Number(req.body?.daysBack || 180), 30, 720);
+    const datetime = typeof req.body?.datetime === 'string' && req.body.datetime.includes('/')
+      ? req.body.datetime
+      : getRollingDateRange(daysBack);
+
+    const payload = await computeNdviForPolygon({ polygon, datetime });
+    res.json({
+      datetime,
+      polygon,
+      stats: payload.stats,
+      source: payload.source,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to compute current NDVI.', error: error.message });
+  }
+});
+
+app.post('/api/ndvi/timeline', authMiddleware, async (req, res) => {
+  try {
+    const polygon = readPolygonFromPayload(req.body);
+    if (!polygon) {
+      res.status(400).json({ message: 'Valid polygon (or selectionBounds) is required.' });
+      return;
+    }
+
+    const years = clampNumber(Number(req.body?.years || NDVI_TIMELINE_YEARS), 3, 10);
+    const timeline = await computeNdviTimeline(polygon, years);
+    const valid = timeline.filter((item) => item.status === 'OK');
+    res.json({
+      years,
+      timeline,
+      availableYears: valid.length,
+      averageNdvi: valid.length
+        ? Number((valid.reduce((sum, item) => sum + Number(item.mean || 0), 0) / valid.length).toFixed(4))
+        : null,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to compute NDVI timeline.', error: error.message });
+  }
 });
 
 app.post('/api/agri/insights', async (req, res) => {
@@ -1535,15 +2149,17 @@ app.get('/api/disputes/:id/ledger/verify', authMiddleware, async (req, res) => {
 
     const events = eventResult.rows;
     const blockIntegrityValid = events.every((row) => {
-      const expected = hashBlock({
+      const base = {
         index: row.block_index,
         timestamp: row.block_timestamp,
         eventType: row.event_type,
         payload: row.payload,
         previousHash: row.previous_hash,
         nonce: row.nonce,
-      });
-      return expected === row.hash;
+      };
+      const expected = hashBlock(base);
+      const legacyExpected = hashBlockLegacy(base);
+      return expected === row.hash || legacyExpected === row.hash;
     });
 
     const currentSnapshotHash = disputeSnapshotHash(disputeRowToSnapshot(dispute));
@@ -1576,6 +2192,260 @@ app.get('/api/disputes/:id/ledger/verify', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: 'Failed to verify dispute ledger.', error: error.message });
+  }
+});
+
+app.get('/api/land/boundaries', authMiddleware, async (req, res) => {
+  try {
+    const includeRemoved = isEmployeeAuth(req.auth) && String(req.query?.includeRemoved || '') === 'true';
+    const items = await loadGovBoundaries({ includeRemoved });
+    res.json({
+      scope: isEmployeeAuth(req.auth) ? 'GLOBAL' : 'USER',
+      totalAreaSqM: items
+        .filter((item) => item.status === 'ACTIVE')
+        .reduce((sum, item) => sum + Number(item.areaSqM || 0), 0),
+      items,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load boundary dataset.', error: error.message });
+  }
+});
+
+app.post('/api/land/boundaries', authMiddleware, requireEmployee, async (req, res) => {
+  try {
+    const name = normalizeText(req.body?.name, 120);
+    const location = normalizeText(req.body?.location, 160);
+    const polygon = sanitizePolygon(req.body?.polygon);
+    const status = normalizeToken(req.body?.status || 'ACTIVE');
+    const requestedCode = sanitizeBoundaryCode(req.body?.code);
+
+    if (!name || !location) {
+      res.status(400).json({ message: 'name and location are required.' });
+      return;
+    }
+    if (!polygon) {
+      res.status(400).json({ message: 'Valid polygon is required.' });
+      return;
+    }
+    if (!BOUNDARY_STATUSES.has(status) || status === 'REMOVED') {
+      res.status(400).json({ message: 'status must be ACTIVE for new boundaries.' });
+      return;
+    }
+
+    const centroid = polygonCentroid(polygon);
+    if (!centroid) {
+      res.status(400).json({ message: 'Unable to compute boundary centroid.' });
+      return;
+    }
+    const areaSqM = Number(polygonAreaSqM(polygon).toFixed(3));
+    if (areaSqM < 20) {
+      res.status(400).json({ message: 'Boundary area is too small.' });
+      return;
+    }
+
+    const payload = await withTransaction(async (client) => {
+      const now = new Date().toISOString();
+      const id = crypto.randomUUID();
+      const code = requestedCode || `GOV-${Date.now().toString(36).toUpperCase()}`;
+      const block = await insertChainBlock(client, 'GOV_BOUNDARY_CREATED', {
+        boundaryId: id,
+        code,
+        name,
+        location,
+        areaSqM,
+        createdBy: req.auth.sub,
+      });
+
+      const inserted = await client.query(
+        `
+          INSERT INTO gov_boundaries (
+            id, code, name, location, polygon,
+            centroid_lat, centroid_lng, area_sq_m,
+            status, is_preset, created_by,
+            created_at, updated_at,
+            ledger_block_index, ledger_block_hash
+          )
+          VALUES (
+            $1, $2, $3, $4, $5::jsonb,
+            $6, $7, $8,
+            $9, false, $10,
+            $11, $11,
+            $12, $13
+          )
+          RETURNING *
+        `,
+        [
+          id,
+          code,
+          name,
+          location,
+          JSON.stringify(polygon),
+          centroid[0],
+          centroid[1],
+          areaSqM,
+          status,
+          req.auth.sub,
+          now,
+          block.index,
+          block.hash,
+        ]
+      );
+      return toGovBoundaryRecord(inserted.rows[0]);
+    });
+
+    res.status(201).json({ item: payload });
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (message.toLowerCase().includes('duplicate key')) {
+      res.status(409).json({ message: 'Boundary code already exists.' });
+      return;
+    }
+    res.status(500).json({ message: 'Failed to create boundary.', error: message });
+  }
+});
+
+app.patch('/api/land/boundaries/:id', authMiddleware, requireEmployee, async (req, res) => {
+  try {
+    const boundaryId = String(req.params.id || '').trim();
+    if (!boundaryId) {
+      res.status(400).json({ message: 'boundary id is required.' });
+      return;
+    }
+
+    const payload = await withTransaction(async (client) => {
+      const currentResult = await client.query(
+        'SELECT * FROM gov_boundaries WHERE id = $1 LIMIT 1 FOR UPDATE',
+        [boundaryId]
+      );
+      const current = currentResult.rows[0];
+      if (!current) return null;
+
+      const nextName = req.body?.name === undefined ? current.name : normalizeText(req.body?.name, 120);
+      const nextLocation =
+        req.body?.location === undefined ? current.location : normalizeText(req.body?.location, 160);
+      const nextStatus =
+        req.body?.status === undefined ? current.status : normalizeToken(req.body?.status);
+      const nextCode = req.body?.code === undefined ? current.code : sanitizeBoundaryCode(req.body?.code);
+      const nextPolygon =
+        req.body?.polygon === undefined
+          ? sanitizePolygon(current.polygon)
+          : sanitizePolygon(req.body?.polygon);
+
+      if (!nextName || !nextLocation || !nextCode) {
+        throw httpError(400, 'name, location, and code must be non-empty.');
+      }
+      if (!nextPolygon) {
+        throw httpError(400, 'Valid polygon is required.');
+      }
+      if (!BOUNDARY_STATUSES.has(nextStatus)) {
+        throw httpError(400, 'status must be ACTIVE or REMOVED.');
+      }
+
+      const centroid = polygonCentroid(nextPolygon);
+      if (!centroid) throw httpError(400, 'Unable to compute centroid.');
+      const areaSqM = Number(polygonAreaSqM(nextPolygon).toFixed(3));
+      const now = new Date().toISOString();
+
+      const block = await insertChainBlock(client, 'GOV_BOUNDARY_UPDATED', {
+        boundaryId,
+        code: nextCode,
+        previousStatus: current.status,
+        status: nextStatus,
+        updatedBy: req.auth.sub,
+      });
+
+      const updated = await client.query(
+        `
+          UPDATE gov_boundaries
+          SET
+            code = $1,
+            name = $2,
+            location = $3,
+            polygon = $4::jsonb,
+            centroid_lat = $5,
+            centroid_lng = $6,
+            area_sq_m = $7,
+            status = $8,
+            updated_at = $9,
+            ledger_block_index = $10,
+            ledger_block_hash = $11
+          WHERE id = $12
+          RETURNING *
+        `,
+        [
+          nextCode,
+          nextName,
+          nextLocation,
+          JSON.stringify(nextPolygon),
+          centroid[0],
+          centroid[1],
+          areaSqM,
+          nextStatus,
+          now,
+          block.index,
+          block.hash,
+          boundaryId,
+        ]
+      );
+      return toGovBoundaryRecord(updated.rows[0]);
+    });
+
+    if (!payload) {
+      res.status(404).json({ message: 'Boundary not found.' });
+      return;
+    }
+    res.json({ item: payload });
+  } catch (error) {
+    res.status(error.status || 500).json({ message: error.message || 'Failed to update boundary.' });
+  }
+});
+
+app.delete('/api/land/boundaries/:id', authMiddleware, requireEmployee, async (req, res) => {
+  try {
+    const boundaryId = String(req.params.id || '').trim();
+    if (!boundaryId) {
+      res.status(400).json({ message: 'boundary id is required.' });
+      return;
+    }
+
+    const payload = await withTransaction(async (client) => {
+      const currentResult = await client.query(
+        'SELECT * FROM gov_boundaries WHERE id = $1 LIMIT 1 FOR UPDATE',
+        [boundaryId]
+      );
+      const current = currentResult.rows[0];
+      if (!current) return null;
+
+      const now = new Date().toISOString();
+      const block = await insertChainBlock(client, 'GOV_BOUNDARY_REMOVED', {
+        boundaryId,
+        code: current.code,
+        removedBy: req.auth.sub,
+      });
+
+      const updated = await client.query(
+        `
+          UPDATE gov_boundaries
+          SET
+            status = 'REMOVED',
+            updated_at = $1,
+            ledger_block_index = $2,
+            ledger_block_hash = $3
+          WHERE id = $4
+          RETURNING *
+        `,
+        [now, block.index, block.hash, boundaryId]
+      );
+      return toGovBoundaryRecord(updated.rows[0]);
+    });
+
+    if (!payload) {
+      res.status(404).json({ message: 'Boundary not found.' });
+      return;
+    }
+    res.json({ item: payload });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to remove boundary.', error: error.message });
   }
 });
 
@@ -1906,7 +2776,7 @@ app.patch('/api/land/claims/:id/review', authMiddleware, requireEmployee, async 
 
 app.get('/api/land/summary', authMiddleware, requireEmployee, async (_req, res) => {
   try {
-    const [parcelSummaryResult, claimSummaryResult, ownershipRows, claimsRows] = await Promise.all([
+    const [parcelSummaryResult, claimSummaryResult, boundarySummaryResult, ownershipRows, claimsRows] = await Promise.all([
       query(
         `
           SELECT
@@ -1925,6 +2795,15 @@ app.get('/api/land/summary', authMiddleware, requireEmployee, async (_req, res) 
             COUNT(*) FILTER (WHERE status = 'APPROVED')::int AS approved_claims,
             COUNT(*) FILTER (WHERE status = 'REJECTED')::int AS rejected_claims
           FROM land_claims
+        `
+      ),
+      query(
+        `
+          SELECT
+            COUNT(*) FILTER (WHERE status = 'ACTIVE')::int AS active_boundaries,
+            COUNT(*) FILTER (WHERE status = 'REMOVED')::int AS removed_boundaries,
+            COALESCE(SUM(area_sq_m) FILTER (WHERE status = 'ACTIVE'), 0)::double precision AS active_area_sq_m
+          FROM gov_boundaries
         `
       ),
       query(
@@ -1965,6 +2844,7 @@ app.get('/api/land/summary', authMiddleware, requireEmployee, async (_req, res) 
 
     const parcelSummary = parcelSummaryResult.rows[0] || {};
     const claimSummary = claimSummaryResult.rows[0] || {};
+    const boundarySummary = boundarySummaryResult.rows[0] || {};
     const pendingClaims = claimsRows.rows.map((row) => ({
       id: row.id,
       pid: row.pid,
@@ -1989,6 +2869,11 @@ app.get('/api/land/summary', authMiddleware, requireEmployee, async (_req, res) 
         flagged: Number(claimSummary.flagged_claims || 0),
         approved: Number(claimSummary.approved_claims || 0),
         rejected: Number(claimSummary.rejected_claims || 0),
+      },
+      boundaries: {
+        active: Number(boundarySummary.active_boundaries || 0),
+        removed: Number(boundarySummary.removed_boundaries || 0),
+        totalActiveAreaSqM: Number(boundarySummary.active_area_sq_m || 0),
       },
       ownership: ownershipRows.rows.map((row) => ({
         owner: {
@@ -2590,6 +3475,7 @@ const startDatabaseWithRetry = async () => {
     try {
       await initDatabase();
       await ensureGenesisBlock();
+      await ensureGovBoundaryPresets();
       databaseReady = true;
       console.log(`Database initialization complete (${getPersistenceMode()}).`);
     } catch (error) {

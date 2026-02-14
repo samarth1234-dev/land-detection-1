@@ -380,6 +380,41 @@ const bootstrapSchema = async () => {
   `);
 
   await query(`
+    CREATE TABLE IF NOT EXISTS gov_boundaries (
+      id UUID PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      location TEXT NOT NULL,
+      polygon JSONB NOT NULL,
+      centroid_lat DOUBLE PRECISION NOT NULL,
+      centroid_lng DOUBLE PRECISION NOT NULL,
+      area_sq_m DOUBLE PRECISION NOT NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      is_preset BOOLEAN NOT NULL DEFAULT false,
+      created_by UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      ledger_block_index INTEGER NOT NULL REFERENCES chain_blocks(block_index),
+      ledger_block_hash TEXT NOT NULL
+    );
+  `);
+
+  await query(`
+    ALTER TABLE gov_boundaries
+    ADD COLUMN IF NOT EXISTS code TEXT;
+  `);
+
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS gov_boundaries_code_unique_idx
+    ON gov_boundaries (code);
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS gov_boundaries_status_idx
+    ON gov_boundaries (status);
+  `);
+
+  await query(`
     CREATE TABLE IF NOT EXISTS dispute_events (
       id UUID PRIMARY KEY,
       dispute_id UUID NOT NULL REFERENCES land_disputes(id) ON DELETE CASCADE,

@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: root-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm run server
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PERSISTENCE_MODE
+        value: postgresql
+      - key: ALLOW_MEMORY_FALLBACK
+        value: "false"
+      - key: DATABASE_SSL
+        value: "true"
+      - key: TOKEN_EXPIRY
+        value: 7d
+      - key: EMPLOYEE_SIGNUP_CODE
+        value: gov-2026
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        value: https://YOUR-VERCEL-DOMAIN.vercel.app,http://localhost:3000,http://127.0.0.1:3000
+      - key: DATABASE_URL
+        sync: false

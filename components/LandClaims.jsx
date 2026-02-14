@@ -6,6 +6,7 @@ import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 
 import { Icons } from './Icons.jsx';
 import { fetchLandClaims, reviewLandClaim, submitLandClaim } from '../services/landClaimService.js';
+import { searchLocation } from '../services/ndviService.js';
 
 if (!L.Icon.Default.prototype._rootLandClaimIconFix) {
   delete L.Icon.Default.prototype._getIconUrl;
@@ -18,7 +19,6 @@ if (!L.Icon.Default.prototype._rootLandClaimIconFix) {
 }
 
 const DEFAULT_MAP_CENTER = [28.6139, 77.209];
-const NOMINATIM_URL = '/nominatim/search';
 
 const formatDateTime = (value) => {
   if (!value) return 'NA';
@@ -97,6 +97,7 @@ export const LandClaims = ({ role = 'USER' }) => {
   const mapRef = useRef(null);
   const polygonRef = useRef(null);
   const markersLayerRef = useRef(null);
+  const vertexMarkersRef = useRef([]);
 
   const loadClaims = async () => {
     setIsLoading(true);
@@ -144,11 +145,14 @@ export const LandClaims = ({ role = 'USER' }) => {
       mapRef.current = null;
       polygonRef.current = null;
       markersLayerRef.current = null;
+      vertexMarkersRef.current = [];
     };
   }, [isEmployee]);
 
   useEffect(() => {
     if (isEmployee || !mapRef.current || !markersLayerRef.current) return;
+    vertexMarkersRef.current.forEach((marker) => marker.remove());
+    vertexMarkersRef.current = [];
     markersLayerRef.current.clearLayers();
     if (polygonRef.current) {
       polygonRef.current.remove();
@@ -156,15 +160,21 @@ export const LandClaims = ({ role = 'USER' }) => {
     }
 
     polygon.forEach((point, index) => {
-      L.circleMarker(point, {
-        radius: 5,
-        color: '#0f7db6',
-        fillColor: '#0f7db6',
-        fillOpacity: 0.9,
-        weight: 1,
-      })
-        .bindTooltip(`${index + 1}`)
+      const marker = L.marker(point, { draggable: true })
+        .bindTooltip(`${index + 1}`, { direction: 'top', offset: [0, -8] })
         .addTo(markersLayerRef.current);
+
+      marker.on('dragend', (event) => {
+        const latlng = event.target.getLatLng();
+        const nextPoint = [Number(latlng.lat.toFixed(6)), Number(latlng.lng.toFixed(6))];
+        setPolygon((prev) => prev.map((item, itemIdx) => (itemIdx === index ? nextPoint : item)));
+      });
+
+      marker.on('dblclick', () => {
+        setPolygon((prev) => prev.filter((_, itemIdx) => itemIdx !== index));
+      });
+
+      vertexMarkersRef.current.push(marker);
     });
 
     if (polygon.length >= 3) {
@@ -194,19 +204,13 @@ export const LandClaims = ({ role = 'USER' }) => {
 
     setIsLocating(true);
     try {
-      const response = await fetch(
-        `${NOMINATIM_URL}?format=jsonv2&addressdetails=1&limit=1&q=${encodeURIComponent(query)}`
-      );
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `Search failed (${response.status})`);
-      }
-      const items = await response.json();
-      if (!Array.isArray(items) || !items.length) {
+      const payload = await searchLocation(query);
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      if (!items.length) {
         throw new Error('Location not found.');
       }
-      const lat = Number(items[0].lat);
-      const lng = Number(items[0].lon);
+      const lat = Number(items[0].coords?.[0]);
+      const lng = Number(items[0].coords?.[1]);
       if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
         throw new Error('Location coordinates invalid.');
       }
@@ -334,7 +338,7 @@ export const LandClaims = ({ role = 'USER' }) => {
               <div className="rounded-lg border border-slate-200 bg-white/80 p-3 text-xs text-slate-600">
                 <p>Points selected: <span className="font-semibold text-slate-800">{polygon.length}</span></p>
                 <p className="mt-1">Estimated area: <span className="font-semibold text-slate-800">{areaSqM.toFixed(2)} sq.m</span></p>
-                <p className="mt-1">Click map to add polygon vertices in order.</p>
+                <p className="mt-1">Click map to add vertices. Drag markers to move points. Double-click marker to remove.</p>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
@@ -442,11 +446,16 @@ export const LandClaims = ({ role = 'USER' }) => {
                     <p className="font-semibold">Flagged overlap detected</p>
                     {claim.overlapFlags.slice(0, 4).map((flag) => (
                       <p key={`${flag.type}-${flag.targetId}`} className="mt-1">
-                        {flag.type === 'ACTIVE_PARCEL_OVERLAP' ? 'Overlaps registered parcel' : 'Overlaps pending claim'}:
+                        {flag.type === 'ACTIVE_PARCEL_OVERLAP'
+                          ? 'Overlaps registered parcel'
+                          : flag.type === 'GOV_BOUNDARY_OVERLAP'
+                            ? 'Overlaps government boundary dataset'
+                            : 'Overlaps pending claim'}:
                         {' '}
-                        PID {flag.pid}
+                        {flag.pid ? `PID ${flag.pid}` : flag.boundaryCode || 'Reference boundary'}
                         {flag.ownerName ? ` (owner: ${flag.ownerName})` : ''}
                         {flag.claimantName ? ` (claimant: ${flag.claimantName})` : ''}
+                        {flag.boundaryName ? ` (${flag.boundaryName})` : ''}
                       </p>
                     ))}
                   </div>

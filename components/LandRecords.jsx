@@ -1,6 +1,20 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import L from 'leaflet';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 import { Icons } from './Icons.jsx';
 import { fetchOwnedParcels } from '../services/landClaimService.js';
+
+if (!L.Icon.Default.prototype._rootLandRecordIconFix) {
+  delete L.Icon.Default.prototype._getIconUrl;
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: markerIcon2x,
+    iconUrl: markerIcon,
+    shadowUrl: markerShadow,
+  });
+  L.Icon.Default.prototype._rootLandRecordIconFix = true;
+}
 
 const formatDateTime = (value) => {
   if (!value) return 'NA';
@@ -25,6 +39,11 @@ export const LandRecords = ({ role = 'USER' }) => {
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [activeParcelId, setActiveParcelId] = useState('');
+
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const polygonLayerRef = useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -48,6 +67,69 @@ export const LandRecords = ({ role = 'USER' }) => {
     };
   }, [isEmployee]);
 
+  useEffect(() => {
+    if (!items.length) {
+      setActiveParcelId('');
+      return;
+    }
+    if (!activeParcelId || !items.some((item) => item.id === activeParcelId)) {
+      setActiveParcelId(items[0].id);
+    }
+  }, [items, activeParcelId]);
+
+  useEffect(() => {
+    if (!mapContainerRef.current || mapRef.current) return;
+
+    const map = L.map(mapContainerRef.current).setView([22.9734, 78.6569], 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    polygonLayerRef.current = L.layerGroup().addTo(map);
+    mapRef.current = map;
+    setTimeout(() => map.invalidateSize(), 100);
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      polygonLayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current || !polygonLayerRef.current) return;
+    polygonLayerRef.current.clearLayers();
+
+    const overlays = [];
+    let activeLayer = null;
+    items.forEach((item) => {
+      if (!Array.isArray(item.polygon) || item.polygon.length < 3) return;
+      const isActive = item.id === activeParcelId;
+      const layer = L.polygon(item.polygon, {
+        color: isActive ? '#0f7db6' : '#64748b',
+        weight: isActive ? 3 : 1.8,
+        fillColor: isActive ? '#0f7db6' : '#94a3b8',
+        fillOpacity: isActive ? 0.28 : 0.14,
+      })
+        .bindPopup(
+          `<strong>PID:</strong> ${item.pid}<br/><strong>Area:</strong> ${Number(item.areaSqM || 0).toFixed(2)} sq.m`
+        )
+        .addTo(polygonLayerRef.current);
+      overlays.push(layer);
+      if (isActive) activeLayer = layer;
+    });
+
+    if (activeLayer) {
+      mapRef.current.fitBounds(activeLayer.getBounds(), { padding: [24, 24], maxZoom: 16 });
+      activeLayer.openPopup();
+      return;
+    }
+    if (overlays.length) {
+      mapRef.current.fitBounds(L.featureGroup(overlays).getBounds(), { padding: [24, 24] });
+    }
+  }, [items, activeParcelId]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return items;
@@ -66,6 +148,11 @@ export const LandRecords = ({ role = 'USER' }) => {
       return text.includes(q);
     });
   }, [items, query]);
+
+  const activeParcel = useMemo(
+    () => items.find((item) => item.id === activeParcelId) || null,
+    [items, activeParcelId]
+  );
 
   return (
     <div className="space-y-6 p-6">
@@ -87,6 +174,19 @@ export const LandRecords = ({ role = 'USER' }) => {
           {error}
         </section>
       )}
+
+      <section className="panel-surface rounded-2xl p-5">
+        <h3 className="font-display text-lg font-bold text-slate-900">Registry Polygon Viewer</h3>
+        <p className="mt-1 text-xs text-slate-500">Click any registry row to focus its polygon on the map.</p>
+        <div ref={mapContainerRef} className="mt-3 h-[360px] w-full overflow-hidden rounded-lg border border-slate-200" />
+        {activeParcel && (
+          <div className="mt-3 rounded-lg border border-slate-200 bg-white/85 px-3 py-2 text-xs text-slate-600">
+            <p className="font-semibold text-slate-800">Active PID: {activeParcel.pid}</p>
+            <p className="mt-1">Centroid: {formatCoord(activeParcel.centroid)}</p>
+            <p className="mt-1">Area: {Number(activeParcel.areaSqM || 0).toFixed(2)} sq.m</p>
+          </div>
+        )}
+      </section>
 
       <section className="panel-surface rounded-2xl">
         <div className="border-b border-slate-200 px-5 py-4">
@@ -129,7 +229,13 @@ export const LandRecords = ({ role = 'USER' }) => {
                 </tr>
               ) : filtered.length ? (
                 filtered.map((item) => (
-                  <tr key={item.id} className="border-t border-slate-100 bg-white/85 hover:bg-white">
+                  <tr
+                    key={item.id}
+                    onClick={() => setActiveParcelId(item.id)}
+                    className={`cursor-pointer border-t border-slate-100 transition ${
+                      activeParcelId === item.id ? 'bg-blue-50/70' : 'bg-white/85 hover:bg-white'
+                    }`}
+                  >
                     <td className="px-5 py-4 font-semibold text-slate-900">{item.pid}</td>
                     {isEmployee && (
                       <td className="px-5 py-4 text-slate-700">

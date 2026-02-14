@@ -1,20 +1,9 @@
+import { buildApiUrl, parseJsonResponse } from './apiClient.js';
+
 const AUTH_STORAGE_KEY = 'root_auth_session_v1';
 
-const parseResponse = async (response) => {
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
-
-  if (!response.ok) {
-    const error = new Error(payload?.message || 'Authentication request failed.');
-    error.status = response.status;
-    throw error;
-  }
-
-  return payload;
-};
-
 const request = async (path, options = {}) => {
-  const response = await fetch(`/api/auth${path}`, {
+  const response = await fetch(buildApiUrl(`/api/auth${path}`), {
     method: options.method || 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -23,7 +12,7 @@ const request = async (path, options = {}) => {
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
 
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Authentication request failed.');
 };
 
 export const saveSession = (session) => {

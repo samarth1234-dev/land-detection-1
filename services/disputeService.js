@@ -1,17 +1,5 @@
 import { loadSession } from './authService.js';
-
-const parseResponse = async (response) => {
-  const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
-
-  if (!response.ok) {
-    const error = new Error(payload?.message || 'Dispute request failed.');
-    error.status = response.status;
-    throw error;
-  }
-
-  return payload;
-};
+import { buildApiUrl, parseJsonResponse } from './apiClient.js';
 
 const authHeaders = () => {
   const session = loadSession();
@@ -25,24 +13,24 @@ const authHeaders = () => {
 };
 
 export const fetchDisputeSummary = async () => {
-  const response = await fetch('/api/disputes/summary', {
+  const response = await fetch(buildApiUrl('/api/disputes/summary'), {
     method: 'GET',
     headers: authHeaders(),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to load dispute summary.');
 };
 
 export const fetchDisputes = async (status = '') => {
   const endpoint = status ? `/api/disputes?status=${encodeURIComponent(status)}` : '/api/disputes';
-  const response = await fetch(endpoint, {
+  const response = await fetch(buildApiUrl(endpoint), {
     method: 'GET',
     headers: authHeaders(),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to load disputes.');
 };
 
 export const createDispute = async ({ parcelRef, disputeType, description, coords, selectionBounds, priority, evidenceUrls }) => {
-  const response = await fetch('/api/disputes', {
+  const response = await fetch(buildApiUrl('/api/disputes'), {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({
@@ -55,22 +43,22 @@ export const createDispute = async ({ parcelRef, disputeType, description, coord
       evidenceUrls,
     }),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to create dispute.');
 };
 
 export const updateDisputeStatus = async ({ disputeId, status, note }) => {
-  const response = await fetch(`/api/disputes/${encodeURIComponent(disputeId)}/status`, {
+  const response = await fetch(buildApiUrl(`/api/disputes/${encodeURIComponent(disputeId)}/status`), {
     method: 'PATCH',
     headers: authHeaders(),
     body: JSON.stringify({ status, note }),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to update dispute status.');
 };
 
 export const verifyDisputeLedger = async (disputeId) => {
-  const response = await fetch(`/api/disputes/${encodeURIComponent(disputeId)}/ledger/verify`, {
+  const response = await fetch(buildApiUrl(`/api/disputes/${encodeURIComponent(disputeId)}/ledger/verify`), {
     method: 'GET',
     headers: authHeaders(),
   });
-  return parseResponse(response);
+  return parseJsonResponse(response, 'Failed to verify dispute ledger.');
 };
