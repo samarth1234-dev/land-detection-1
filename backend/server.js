@@ -939,49 +939,75 @@ const getDateRangeIso = ({ start, end }) => `${start.toISOString()}/${end.toISOS
 
 const fetchEarthSearchScene = async ({ polygon, datetime }) => {
   const geometry = buildSelectionFeatureFromPolygon(polygon).geometry;
-  const response = await fetch(`${EARTH_SEARCH_BASE_URL}/search`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      collections: ['sentinel-2-l2a', 'sentinel-2-c1-l2a'],
-      intersects: geometry,
-      datetime,
-      limit: 35,
-    }),
-  });
+  const attempts = [
+    {
+      mode: 'intersects',
+      body: {
+        collections: ['sentinel-2-l2a', 'sentinel-2-c1-l2a'],
+        intersects: geometry,
+        datetime,
+        limit: 35,
+      },
+    },
+    {
+      mode: 'bbox',
+      body: {
+        collections: ['sentinel-2-l2a', 'sentinel-2-c1-l2a'],
+        bbox: buildBboxFromPolygon(polygon),
+        datetime,
+        limit: 35,
+      },
+    },
+  ];
 
-  if (!response.ok) {
-    const detail = await extractApiErrorText(response);
-    throw new Error(`Sentinel scene search failed: ${detail}`);
+  const errors = [];
+  for (const attempt of attempts) {
+    const response = await fetch(`${EARTH_SEARCH_BASE_URL}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(attempt.body),
+    });
+
+    if (!response.ok) {
+      const detail = await extractApiErrorText(response);
+      errors.push(`${attempt.mode}: ${detail}`);
+      continue;
+    }
+
+    const payload = await response.json();
+    const features = Array.isArray(payload?.features) ? payload.features : [];
+    if (!features.length) {
+      errors.push(`${attempt.mode}: no scenes`);
+      continue;
+    }
+
+    const ranked = [...features]
+      .map((item) => ({ item, cloud: toFiniteNumber(item?.properties?.['eo:cloud_cover'], 999) }))
+      .sort((a, b) => a.cloud - b.cloud);
+    const withBands = ranked.find(({ item }) => selectAssetPair(item.assets));
+    if (!withBands) {
+      errors.push(`${attempt.mode}: scene lacks usable red/nir bands`);
+      continue;
+    }
+
+    const pair = selectAssetPair(withBands.item.assets);
+    const itemUrl =
+      withBands.item.links?.find((link) => link.rel === 'self')?.href ||
+      `${EARTH_SEARCH_BASE_URL}/collections/${withBands.item.collection}/items/${withBands.item.id}`;
+
+    return {
+      id: withBands.item.id,
+      datetime: withBands.item.properties?.datetime || null,
+      cloudCover: toFiniteNumber(withBands.item.properties?.['eo:cloud_cover'], 0),
+      redAsset: pair.red,
+      nirAsset: pair.nir,
+      itemUrl,
+    };
   }
 
-  const payload = await response.json();
-  const features = Array.isArray(payload?.features) ? payload.features : [];
-  if (!features.length) {
-    throw new Error('No Sentinel-2 scene found for selected area and date range.');
-  }
-
-  const ranked = [...features]
-    .map((item) => ({ item, cloud: toFiniteNumber(item?.properties?.['eo:cloud_cover'], 999) }))
-    .sort((a, b) => a.cloud - b.cloud);
-  const withBands = ranked.find(({ item }) => selectAssetPair(item.assets));
-  if (!withBands) {
-    throw new Error('No Sentinel-2 scene with usable red and NIR bands.');
-  }
-
-  const pair = selectAssetPair(withBands.item.assets);
-  const itemUrl =
-    withBands.item.links?.find((link) => link.rel === 'self')?.href ||
-    `${EARTH_SEARCH_BASE_URL}/collections/${withBands.item.collection}/items/${withBands.item.id}`;
-
-  return {
-    id: withBands.item.id,
-    datetime: withBands.item.properties?.datetime || null,
-    cloudCover: toFiniteNumber(withBands.item.properties?.['eo:cloud_cover'], 0),
-    redAsset: pair.red,
-    nirAsset: pair.nir,
-    itemUrl,
-  };
+  throw new Error(
+    `Sentinel scene search failed: ${errors.join(' | ') || 'No compatible scene found for this area/date.'}`
+  );
 };
 
 const fetchNdviStatsFromTitiler = async ({ polygon, scene }) => {
