@@ -12,7 +12,8 @@ export const parseJsonResponse = async (response, fallbackMessage) => {
   const payload = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
-    const error = new Error(payload?.message || payload?.error || fallbackMessage || 'Request failed.');
+    const message = payload?.error || payload?.message || fallbackMessage || 'Request failed.';
+    const error = new Error(message);
     error.status = response.status;
     error.payload = payload;
     throw error;

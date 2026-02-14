@@ -1511,7 +1511,9 @@ app.post('/api/ndvi/current', authMiddleware, async (req, res) => {
       source: payload.source,
     });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to compute current NDVI.', error: error.message });
+    const detail = error instanceof Error ? error.message : 'Unknown NDVI error';
+    const status = detail.includes('No Sentinel-2 scene') ? 404 : detail.includes('required') ? 400 : 502;
+    res.status(status).json({ message: 'Failed to compute current NDVI.', error: detail });
   }
 });
 
@@ -1535,7 +1537,9 @@ app.post('/api/ndvi/timeline', authMiddleware, async (req, res) => {
         : null,
     });
   } catch (error) {
-    res.status(500).json({ message: 'Failed to compute NDVI timeline.', error: error.message });
+    const detail = error instanceof Error ? error.message : 'Unknown NDVI timeline error';
+    const status = detail.includes('required') ? 400 : 502;
+    res.status(status).json({ message: 'Failed to compute NDVI timeline.', error: detail });
   }
 });
 
