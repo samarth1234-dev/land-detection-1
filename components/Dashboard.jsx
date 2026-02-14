@@ -1,248 +1,258 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Icons } from './Icons';
-import { verifyAuthChain } from '../services/authService.js';
-import { fetchAgricultureHistory } from '../services/agriInsightsService.js';
-import { fetchDisputeSummary } from '../services/disputeService.js';
-import { fetchGovernanceAnalytics } from '../services/analyticsService.js';
+import React, { useEffect, useRef, useState } from 'react';
+import L from 'leaflet';
+import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
+import markerIcon from 'leaflet/dist/images/marker-icon.png';
+import markerShadow from 'leaflet/dist/images/marker-shadow.png';
 
-const formatDateTime = (value) => {
-  if (!value) return 'NA';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'NA';
-  return date.toLocaleString();
+import { Icons } from './Icons.jsx';
+import { fetchLandClaims, fetchLandSummary, fetchOwnedParcels } from '../services/landClaimService.js';
+
+if (!L.Icon.Default.prototype._rootDashboardMapIconFix) {
+  delete L.Icon.Default.prototype._getIconUrl;
+  L.Icon.Default.mergeOptions({
+    iconRetinaUrl: markerIcon2x,
+    iconUrl: markerIcon,
+    shadowUrl: markerShadow,
+  });
+  L.Icon.Default.prototype._rootDashboardMapIconFix = true;
+}
+
+const DEFAULT_MAP_CENTER = [22.9734, 78.6569];
+
+const formatCoord = (coord) => {
+  if (!Array.isArray(coord) || coord.length < 2) return 'NA';
+  return `${Number(coord[0]).toFixed(5)}, ${Number(coord[1]).toFixed(5)}`;
 };
 
-const formatCoords = (coords = []) => {
-  if (!Array.isArray(coords) || coords.length < 2) return 'NA';
-  return `${Number(coords[0]).toFixed(4)}, ${Number(coords[1]).toFixed(4)}`;
+const formatSqM = (value) => `${Number(value || 0).toFixed(2)} sq.m`;
+
+const colorFromId = (id) => {
+  const value = String(id || 'seed');
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = value.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue}, 72%, 45%)`;
 };
 
 export const Dashboard = ({ role = 'USER' }) => {
   const isEmployee = role === 'EMPLOYEE';
-  const [chain, setChain] = useState({ valid: null, totalBlocks: 0, lastHash: null });
-  const [insights, setInsights] = useState([]);
-  const [disputeSummary, setDisputeSummary] = useState({
-    total: 0,
-    open: 0,
-    in_review: 0,
-    resolved: 0,
-    rejected: 0,
-    urgent_open: 0,
-  });
-  const [governance, setGovernance] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [parcels, setParcels] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+
+  const mapContainerRef = useRef(null);
+  const mapRef = useRef(null);
+  const parcelsLayerRef = useRef(null);
 
   useEffect(() => {
     let active = true;
-
     const load = async () => {
-      setLoading(true);
+      setIsLoading(true);
       setError('');
       try {
-        const requests = [verifyAuthChain(), fetchAgricultureHistory(), fetchDisputeSummary()];
         if (isEmployee) {
-          requests.push(fetchGovernanceAnalytics());
+          const [parcelPayload, claimPayload, summaryPayload] = await Promise.all([
+            fetchOwnedParcels('global'),
+            fetchLandClaims({ scope: 'global', status: 'PENDING,FLAGGED' }),
+            fetchLandSummary(),
+          ]);
+          if (!active) return;
+          setParcels(Array.isArray(parcelPayload.items) ? parcelPayload.items : []);
+          setClaims(Array.isArray(claimPayload.items) ? claimPayload.items : []);
+          setSummary(summaryPayload || null);
+        } else {
+          const parcelPayload = await fetchOwnedParcels('mine');
+          if (!active) return;
+          setParcels(Array.isArray(parcelPayload.items) ? parcelPayload.items : []);
+          setSummary(null);
         }
-        const [chainResult, historyResult, disputeResult, governanceResult] = await Promise.all(requests);
-
-        if (!active) return;
-        setChain({
-          valid: chainResult.valid,
-          totalBlocks: chainResult.totalBlocks || 0,
-          lastHash: chainResult.lastHash || null,
-        });
-        setInsights(Array.isArray(historyResult.items) ? historyResult.items : []);
-        setDisputeSummary({
-          total: Number(disputeResult.total || 0),
-          open: Number(disputeResult.open || 0),
-          in_review: Number(disputeResult.in_review || 0),
-          resolved: Number(disputeResult.resolved || 0),
-          rejected: Number(disputeResult.rejected || 0),
-          urgent_open: Number(disputeResult.urgent_open || 0),
-        });
-        setGovernance(isEmployee ? governanceResult || null : null);
       } catch (loadError) {
         if (!active) return;
-        setError(loadError instanceof Error ? loadError.message : 'Unable to load dashboard data.');
+        setError(loadError instanceof Error ? loadError.message : 'Failed to load dashboard.');
       } finally {
-        if (active) setLoading(false);
+        if (active) setIsLoading(false);
       }
     };
 
-    load();
+    void load();
     return () => {
       active = false;
     };
   }, [isEmployee]);
 
-  const metrics = useMemo(() => {
-    const totalInsights = insights.length;
-    const ndviAvg = totalInsights
-      ? insights.reduce((acc, item) => acc + Number(item?.ndvi?.mean || 0), 0) / totalInsights
-      : 0;
-    const latest = insights[0] || null;
-    const highRisk = insights.filter((item) =>
-      Array.isArray(item.risks) && item.risks.some((risk) => typeof risk === 'string' && risk !== 'No major short-term agricultural risk detected')
-    ).length;
+  useEffect(() => {
+    if (!isEmployee || !mapContainerRef.current || mapRef.current) return;
+    const map = L.map(mapContainerRef.current).setView(DEFAULT_MAP_CENTER, 5);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      maxZoom: 19,
+    }).addTo(map);
 
-    return {
-      totalInsights,
-      ndviAvg,
-      latest,
-      highRisk,
+    parcelsLayerRef.current = L.layerGroup().addTo(map);
+    mapRef.current = map;
+    setTimeout(() => map.invalidateSize(), 100);
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      parcelsLayerRef.current = null;
     };
-  }, [insights]);
+  }, [isEmployee]);
+
+  useEffect(() => {
+    if (!isEmployee || !mapRef.current || !parcelsLayerRef.current) return;
+    parcelsLayerRef.current.clearLayers();
+
+    const polygons = [];
+    for (const parcel of parcels) {
+      if (!Array.isArray(parcel.polygon) || parcel.polygon.length < 3) continue;
+      const color = colorFromId(parcel.owner?.id || parcel.id);
+      const polygon = L.polygon(parcel.polygon, {
+        color,
+        weight: 2,
+        fillColor: color,
+        fillOpacity: 0.25,
+      })
+        .bindPopup(
+          `<strong>PID:</strong> ${parcel.pid}<br/><strong>Owner:</strong> ${parcel.owner?.name || 'Unknown'}<br/><strong>Area:</strong> ${formatSqM(parcel.areaSqM)}`
+        )
+        .addTo(parcelsLayerRef.current);
+      polygons.push(polygon);
+    }
+
+    if (polygons.length) {
+      const group = L.featureGroup(polygons);
+      mapRef.current.fitBounds(group.getBounds(), { padding: [20, 20] });
+    }
+  }, [isEmployee, parcels]);
+
+  if (isLoading) {
+    return (
+      <div className="grid h-full place-items-center p-6">
+        <div className="panel-surface rounded-2xl px-6 py-5 text-center">
+          <Icons.Spinner className="mx-auto h-6 w-6 animate-spin text-brand-600" />
+          <p className="mt-3 text-sm text-slate-600">Loading dashboard...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 p-6">
-      <section className="panel-surface rounded-2xl p-6 shadow-[0_14px_36px_rgba(15,23,42,0.08)]">
-        <p className="inline-flex items-center gap-2 rounded-full border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-brand-700">
-          <Icons.Sparkles className="h-3.5 w-3.5" />
-          {isEmployee ? 'Governance Overview' : 'Citizen Overview'}
-        </p>
-        <h2 className="mt-3 font-display text-2xl font-bold text-slate-900">
-          {isEmployee ? 'Government Operations Dashboard' : 'My Land Intelligence Dashboard'}
-        </h2>
-        <p className="mt-2 max-w-2xl text-sm text-slate-600">
-          {isEmployee
-            ? 'Global metrics across users, disputes, vegetation trends, and blockchain-backed audit integrity.'
-            : 'My records, dispute activity, and latest agricultural recommendations for selected parcels.'}
-        </p>
-      </section>
-
       {error && (
         <section className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {error}
         </section>
       )}
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
-        <article className="panel-surface rounded-xl p-4">
-          <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Chain status</p>
-          <p className={`mt-2 text-xl font-bold ${chain.valid ? 'text-emerald-700' : 'text-rose-700'}`}>
-            {loading ? 'Loading...' : chain.valid ? 'Valid' : 'Issue'}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">Total blocks: {chain.totalBlocks}</p>
-        </article>
+      {!isEmployee ? (
+        <>
+          <section className="panel-surface rounded-2xl p-6 shadow-[0_14px_32px_rgba(15,23,42,0.08)]">
+            <h2 className="font-display text-2xl font-bold text-slate-900">My Registered Land</h2>
+            <p className="mt-2 text-sm text-slate-600">Your approved parcels, PID, coordinates, and owned area.</p>
+          </section>
 
-        <article className="panel-surface rounded-xl p-4">
-          <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Insights generated</p>
-          <p className="mt-2 text-xl font-bold text-slate-900">{loading ? '...' : metrics.totalInsights}</p>
-          <p className="mt-1 text-xs text-slate-500">Stored in PostgreSQL</p>
-        </article>
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <article className="panel-surface rounded-xl p-4">
+              <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Owned parcels</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{parcels.length}</p>
+            </article>
+            <article className="panel-surface rounded-xl p-4">
+              <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Total owned area</p>
+              <p className="mt-2 text-lg font-bold text-slate-900">{formatSqM(parcels.reduce((sum, item) => sum + Number(item.areaSqM || 0), 0))}</p>
+            </article>
+            <article className="panel-surface rounded-xl p-4">
+              <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Last update</p>
+              <p className="mt-2 text-sm font-semibold text-slate-900">
+                {parcels[0]?.updatedAt ? new Date(parcels[0].updatedAt).toLocaleString() : 'NA'}
+              </p>
+            </article>
+          </section>
 
-        <article className="panel-surface rounded-xl p-4">
-          <p className="text-xs uppercase tracking-[0.08em] text-slate-500">{isEmployee ? 'Average NDVI (Global)' : 'Average NDVI'}</p>
-          <p className="mt-2 text-xl font-bold text-slate-900">
-            {loading ? '...' : metrics.totalInsights ? metrics.ndviAvg.toFixed(3) : 'NA'}
-          </p>
-          <p className="mt-1 text-xs text-slate-500">{isEmployee ? 'Across all users' : 'Across my saved insights'}</p>
-        </article>
-
-        <article className="panel-surface rounded-xl p-4">
-          <p className="text-xs uppercase tracking-[0.08em] text-slate-500">High-risk insights</p>
-          <p className="mt-2 text-xl font-bold text-amber-700">{loading ? '...' : metrics.highRisk}</p>
-          <p className="mt-1 text-xs text-slate-500">Need closer review</p>
-        </article>
-
-        <article className="panel-surface rounded-xl p-4">
-          <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Open disputes</p>
-          <p className="mt-2 text-xl font-bold text-rose-700">{loading ? '...' : disputeSummary.open}</p>
-          <p className="mt-1 text-xs text-slate-500">Urgent: {loading ? '...' : disputeSummary.urgent_open}</p>
-        </article>
-      </section>
-
-      {isEmployee && governance && (
-        <section className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-          <article className="panel-surface rounded-2xl p-5">
-            <h3 className="font-display text-lg font-bold text-slate-900">User Mix</h3>
-            <div className="mt-3 space-y-1 text-sm text-slate-700">
-              <p>Total users: <span className="font-semibold">{governance.users?.total ?? 0}</span></p>
-              <p>Citizens: <span className="font-semibold">{governance.users?.citizens ?? 0}</span></p>
-              <p>Employees: <span className="font-semibold">{governance.users?.employees ?? 0}</span></p>
+          <section className="panel-surface rounded-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h3 className="font-display text-lg font-bold text-slate-900">Parcel Ownership List</h3>
             </div>
-          </article>
-
-          <article className="panel-surface rounded-2xl p-5">
-            <h3 className="font-display text-lg font-bold text-slate-900">Climate Averages</h3>
-            <div className="mt-3 space-y-1 text-sm text-slate-700">
-              <p>Rainfall (7d): <span className="font-semibold">{Number(governance.insights?.avgRainfall7d || 0).toFixed(1)} mm</span></p>
-              <p>Avg max temp: <span className="font-semibold">{Number(governance.insights?.avgMaxTemp || 0).toFixed(1)} C</span></p>
-              <p>Avg min temp: <span className="font-semibold">{Number(governance.insights?.avgMinTemp || 0).toFixed(1)} C</span></p>
-              <p>Dispute resolution: <span className="font-semibold">{Number(governance.disputes?.avgResolutionHours || 0).toFixed(1)} hrs</span></p>
-            </div>
-          </article>
-
-          <article className="panel-surface rounded-2xl p-5">
-            <h3 className="font-display text-lg font-bold text-slate-900">Top Crops (Global)</h3>
-            <div className="mt-3 space-y-1 text-sm text-slate-700">
-              {(governance.topCrops || []).length ? (
-                governance.topCrops.map((crop) => (
-                  <p key={crop.name}>
-                    {crop.name}: <span className="font-semibold">{crop.count}</span>
-                  </p>
+            <div className="space-y-3 p-5">
+              {parcels.length ? (
+                parcels.map((parcel) => (
+                  <article key={parcel.id} className="rounded-xl border border-slate-200 bg-white/90 p-4">
+                    <p className="text-sm font-semibold text-slate-900">PID: {parcel.pid}</p>
+                    <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-slate-600 sm:grid-cols-2">
+                      <p>Centroid: {formatCoord(parcel.centroid)}</p>
+                      <p>Area: {formatSqM(parcel.areaSqM)}</p>
+                      <p>Vertices: {Array.isArray(parcel.polygon) ? parcel.polygon.length : 0}</p>
+                      <p>Status: {parcel.status}</p>
+                    </div>
+                  </article>
                 ))
               ) : (
-                <p>No crop distribution data yet.</p>
+                <p className="py-6 text-center text-sm text-slate-500">
+                  No land assigned yet. Submit a claim query from the Land Claims page.
+                </p>
               )}
             </div>
-          </article>
-        </section>
+          </section>
+        </>
+      ) : (
+        <>
+          <section className="panel-surface rounded-2xl p-6 shadow-[0_14px_32px_rgba(15,23,42,0.08)]">
+            <h2 className="font-display text-2xl font-bold text-slate-900">Government Land Governance Dashboard</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Complete map of registered property boundaries, ownership, and PID-based claim queue.
+            </p>
+          </section>
+
+          <section className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+            <article className="panel-surface rounded-xl p-4">
+              <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Registered parcels</p>
+              <p className="mt-2 text-2xl font-bold text-slate-900">{summary?.parcels?.total ?? parcels.length}</p>
+            </article>
+            <article className="panel-surface rounded-xl p-4">
+              <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Total allocated area</p>
+              <p className="mt-2 text-lg font-bold text-slate-900">{formatSqM(summary?.parcels?.totalAreaSqM || 0)}</p>
+            </article>
+            <article className="panel-surface rounded-xl p-4">
+              <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Pending claims</p>
+              <p className="mt-2 text-2xl font-bold text-sky-700">{summary?.claims?.pending ?? 0}</p>
+            </article>
+            <article className="panel-surface rounded-xl p-4">
+              <p className="text-xs uppercase tracking-[0.08em] text-slate-500">Flagged overlaps</p>
+              <p className="mt-2 text-2xl font-bold text-amber-700">{summary?.claims?.flagged ?? 0}</p>
+            </article>
+          </section>
+
+          <section className="panel-surface rounded-2xl p-5">
+            <h3 className="font-display text-lg font-bold text-slate-900">National Parcel Boundary Map</h3>
+            <p className="mt-1 text-xs text-slate-500">Each polygon shows PID, owner, and assigned area.</p>
+            <div ref={mapContainerRef} className="mt-3 h-[520px] w-full overflow-hidden rounded-lg border border-slate-200" />
+          </section>
+
+          <section className="panel-surface rounded-2xl">
+            <div className="border-b border-slate-200 px-5 py-4">
+              <h3 className="font-display text-lg font-bold text-slate-900">Ownership Allocation</h3>
+            </div>
+            <div className="space-y-2 p-5">
+              {(summary?.ownership || []).length ? (
+                summary.ownership.map((item) => (
+                  <div key={item.owner.id} className="rounded-lg border border-slate-200 bg-white/85 px-3 py-2.5 text-sm">
+                    <p className="font-semibold text-slate-900">{item.owner.name}</p>
+                    <p className="text-xs text-slate-500">{item.owner.email || 'no-email'}</p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      Parcels: {item.parcelCount} | Area: {formatSqM(item.areaSqM)}
+                    </p>
+                  </div>
+                ))
+              ) : (
+                <p className="py-4 text-sm text-slate-500">No approved parcel ownership data yet.</p>
+              )}
+            </div>
+          </section>
+        </>
       )}
-
-      <section className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <article className="panel-surface rounded-2xl p-5">
-          <h3 className="font-display text-lg font-bold text-slate-900">{isEmployee ? 'Employee Workflow' : 'How To Use ROOT'}</h3>
-          <div className="mt-4 space-y-3">
-            <div className="rounded-lg border border-slate-200 bg-white/80 px-3 py-3 text-sm text-slate-700">
-              <p className="font-semibold">{isEmployee ? '1. Monitor citizen and dispute trends' : '1. Search and select parcel on map'}</p>
-              <p className="mt-1 text-xs text-slate-500">
-                {isEmployee ? 'Review global metrics and high-risk dispute queues.' : 'Use Geo-Explorer, click two diagonal points to define area.'}
-              </p>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-white/80 px-3 py-3 text-sm text-slate-700">
-              <p className="font-semibold">{isEmployee ? '2. Validate blockchain-linked records' : '2. Review NDVI + crop recommendation'}</p>
-              <p className="mt-1 text-xs text-slate-500">
-                {isEmployee ? 'Verify dispute snapshots and record integrity across users.' : 'System computes NDVI, irrigation need, and risk signals.'}
-              </p>
-            </div>
-            <div className="rounded-lg border border-slate-200 bg-white/80 px-3 py-3 text-sm text-slate-700">
-              <p className="font-semibold">{isEmployee ? '3. Resolve or escalate disputes' : '3. Validate blockchain record'}</p>
-              <p className="mt-1 text-xs text-slate-500">
-                {isEmployee ? 'Use dispute status workflow and governance evidence trail.' : 'Each event is written as a hash-linked block.'}
-              </p>
-            </div>
-          </div>
-        </article>
-
-        <article className="panel-surface rounded-2xl p-5">
-          <h3 className="font-display text-lg font-bold text-slate-900">Latest Insight Snapshot</h3>
-          {loading ? (
-            <p className="mt-4 text-sm text-slate-500">Loading...</p>
-          ) : metrics.latest ? (
-            <div className="mt-4 space-y-2 text-sm">
-              <p className="text-slate-700">
-                <span className="font-semibold">Coords:</span> {formatCoords(metrics.latest.coords)}
-              </p>
-              <p className="text-slate-700">
-                <span className="font-semibold">Top crop:</span> {metrics.latest.recommendedCrops?.[0]?.name || 'NA'}
-              </p>
-              <p className="text-slate-700">
-                <span className="font-semibold">Irrigation:</span> {metrics.latest.irrigation || 'NA'}
-              </p>
-              <p className="text-slate-700">
-                <span className="font-semibold">Generated:</span> {formatDateTime(metrics.latest.createdAt)}
-              </p>
-              <p className="text-xs text-slate-500 break-all">
-                Block hash: {metrics.latest.ledgerBlock?.hash || chain.lastHash || 'NA'}
-              </p>
-            </div>
-          ) : (
-            <p className="mt-4 text-sm text-slate-500">No insight data yet. Generate first result from Geo-Explorer.</p>
-          )}
-        </article>
-      </section>
     </div>
   );
 };

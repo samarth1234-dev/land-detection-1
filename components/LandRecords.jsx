@@ -1,146 +1,147 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Icons } from './Icons';
-import { fetchAgricultureHistory } from '../services/agriInsightsService.js';
+import { Icons } from './Icons.jsx';
+import { fetchOwnedParcels } from '../services/landClaimService.js';
 
 const formatDateTime = (value) => {
   if (!value) return 'NA';
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'NA';
-  return date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? 'NA' : date.toLocaleString();
 };
 
-const formatCoords = (coords = []) => {
-  if (!Array.isArray(coords) || coords.length < 2) return 'NA';
-  return `${Number(coords[0]).toFixed(4)}, ${Number(coords[1]).toFixed(4)}`;
+const formatCoord = (coord) => {
+  if (!Array.isArray(coord) || coord.length < 2) return 'NA';
+  return `${Number(coord[0]).toFixed(5)}, ${Number(coord[1]).toFixed(5)}`;
 };
 
 const shortHash = (hash = '') => {
-  if (!hash || hash.length < 14) return hash || 'NA';
-  return `${hash.slice(0, 8)}...${hash.slice(-6)}`;
+  if (!hash) return 'NA';
+  if (hash.length < 16) return hash;
+  return `${hash.slice(0, 8)}...${hash.slice(-8)}`;
 };
 
-export const LandRecords = () => {
+export const LandRecords = ({ role = 'USER' }) => {
+  const isEmployee = role === 'EMPLOYEE';
   const [items, setItems] = useState([]);
+  const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [query, setQuery] = useState('');
 
   useEffect(() => {
     let active = true;
-
     const load = async () => {
       setIsLoading(true);
       setError('');
       try {
-        const payload = await fetchAgricultureHistory();
+        const payload = await fetchOwnedParcels(isEmployee ? 'global' : 'mine');
         if (!active) return;
         setItems(Array.isArray(payload.items) ? payload.items : []);
       } catch (loadError) {
         if (!active) return;
-        setError(loadError instanceof Error ? loadError.message : 'Failed to load records.');
+        setError(loadError instanceof Error ? loadError.message : 'Failed to load land registry.');
       } finally {
         if (active) setIsLoading(false);
       }
     };
-
-    load();
+    void load();
     return () => {
       active = false;
     };
-  }, []);
+  }, [isEmployee]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return items;
-
     return items.filter((item) => {
-      const topCrop = item.recommendedCrops?.[0]?.name || '';
-      const risk = Array.isArray(item.risks) ? item.risks.join(' ') : '';
-      const summary = item.summary || '';
-      const coords = formatCoords(item.coords);
-      const hash = item.ledgerBlock?.hash || '';
-      const user = `${item.user?.name || ''} ${item.user?.email || ''}`;
-
-      return [topCrop, risk, summary, coords, hash, user].some((value) => String(value).toLowerCase().includes(q));
+      const text = [
+        item.pid,
+        item.owner?.name,
+        item.owner?.email,
+        item.status,
+        item.ledgerBlock?.hash,
+        formatCoord(item.centroid),
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return text.includes(q);
     });
   }, [items, query]);
-
-  const showUserColumn = items.some((item) => item.user?.name || item.user?.email);
 
   return (
     <div className="space-y-6 p-6">
       <section className="panel-surface rounded-2xl p-6 shadow-[0_14px_32px_rgba(15,23,42,0.08)]">
         <p className="inline-flex items-center gap-2 rounded-full border border-earth-200 bg-earth-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-earth-700">
           <Icons.Database className="h-3.5 w-3.5" />
-          Records
+          Registry
         </p>
-        <h2 className="mt-3 font-display text-2xl font-bold text-slate-900">Agriculture Insight Ledger</h2>
+        <h2 className="mt-3 font-display text-2xl font-bold text-slate-900">
+          {isEmployee ? 'National Land Registry Ledger' : 'My Approved Land Registry'}
+        </h2>
         <p className="mt-2 text-sm text-slate-600">
-          Saved PostgreSQL records with linked blockchain block hashes for each generated insight.
+          PID-linked ownership entries with polygon centroid and blockchain assignment hash.
         </p>
       </section>
+
+      {error && (
+        <section className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {error}
+        </section>
+      )}
 
       <section className="panel-surface rounded-2xl">
         <div className="border-b border-slate-200 px-5 py-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="text-sm text-slate-600">
-              Total records: <span className="font-semibold text-slate-900">{items.length}</span>
-            </div>
-            <div className="relative w-full md:w-96">
+            <p className="text-sm text-slate-600">
+              Total parcels: <span className="font-semibold text-slate-900">{items.length}</span>
+            </p>
+            <div className="relative md:w-80">
               <input
-                type="text"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search crop, risk, summary, coords, hash"
-                className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-10 pr-3 text-sm text-slate-700 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                placeholder="Search PID, owner, status"
+                className="w-full rounded-lg border border-slate-300 py-2 pl-10 pr-3 text-sm text-slate-700 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
               />
               <Icons.Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
             </div>
           </div>
         </div>
 
-        {error && (
-          <div className="border-b border-rose-200 bg-rose-50 px-5 py-3 text-sm text-rose-700">{error}</div>
-        )}
-
         <div className="overflow-x-auto">
           <table className="w-full min-w-[980px] text-left text-sm">
             <thead className="bg-slate-100/80 text-xs uppercase tracking-[0.06em] text-slate-500">
               <tr>
-                <th className="px-5 py-3 font-semibold">Date</th>
-                {showUserColumn && <th className="px-5 py-3 font-semibold">User</th>}
-                <th className="px-5 py-3 font-semibold">Coordinates</th>
-                <th className="px-5 py-3 font-semibold">NDVI</th>
-                <th className="px-5 py-3 font-semibold">Top Crop</th>
-                <th className="px-5 py-3 font-semibold">Irrigation</th>
-                <th className="px-5 py-3 font-semibold">Primary Risk</th>
-                <th className="px-5 py-3 font-semibold">Block Hash</th>
+                <th className="px-5 py-3 font-semibold">PID</th>
+                {isEmployee && <th className="px-5 py-3 font-semibold">Owner</th>}
+                <th className="px-5 py-3 font-semibold">Centroid</th>
+                <th className="px-5 py-3 font-semibold">Area (sq.m)</th>
+                <th className="px-5 py-3 font-semibold">Vertices</th>
+                <th className="px-5 py-3 font-semibold">Status</th>
+                <th className="px-5 py-3 font-semibold">Assigned At</th>
+                <th className="px-5 py-3 font-semibold">Ledger Block</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={showUserColumn ? 8 : 7} className="px-5 py-10 text-center text-slate-500">
-                    Loading records...
+                  <td colSpan={isEmployee ? 8 : 7} className="px-5 py-10 text-center text-slate-500">
+                    Loading registry...
                   </td>
                 </tr>
               ) : filtered.length ? (
                 filtered.map((item) => (
                   <tr key={item.id} className="border-t border-slate-100 bg-white/85 hover:bg-white">
-                    <td className="px-5 py-4 text-slate-600">{formatDateTime(item.createdAt)}</td>
-                    {showUserColumn && (
+                    <td className="px-5 py-4 font-semibold text-slate-900">{item.pid}</td>
+                    {isEmployee && (
                       <td className="px-5 py-4 text-slate-700">
-                        {item.user?.name || 'Unknown'}
-                        {item.user?.email ? (
-                          <span className="block text-xs text-slate-500">{item.user.email}</span>
-                        ) : null}
+                        {item.owner?.name || 'Unknown'}
+                        {item.owner?.email ? <span className="block text-xs text-slate-500">{item.owner.email}</span> : null}
                       </td>
                     )}
-                    <td className="px-5 py-4 font-mono text-xs text-slate-700">{formatCoords(item.coords)}</td>
-                    <td className="px-5 py-4 text-slate-700">{Number(item?.ndvi?.mean || 0).toFixed(3)}</td>
-                    <td className="px-5 py-4 text-slate-700">{item.recommendedCrops?.[0]?.name || 'NA'}</td>
-                    <td className="px-5 py-4 text-slate-700">{item.irrigation || 'NA'}</td>
-                    <td className="px-5 py-4 text-amber-700">{item.risks?.[0] || 'NA'}</td>
+                    <td className="px-5 py-4 font-mono text-xs text-slate-700">{formatCoord(item.centroid)}</td>
+                    <td className="px-5 py-4 text-slate-700">{Number(item.areaSqM || 0).toFixed(2)}</td>
+                    <td className="px-5 py-4 text-slate-700">{Array.isArray(item.polygon) ? item.polygon.length : 0}</td>
+                    <td className="px-5 py-4 text-slate-700">{item.status || 'ACTIVE'}</td>
+                    <td className="px-5 py-4 text-slate-600">{formatDateTime(item.createdAt)}</td>
                     <td className="px-5 py-4 font-mono text-xs text-slate-500" title={item.ledgerBlock?.hash || ''}>
                       {shortHash(item.ledgerBlock?.hash)}
                     </td>
@@ -148,9 +149,8 @@ export const LandRecords = () => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={showUserColumn ? 8 : 7} className="px-5 py-10 text-center">
-                    <p className="font-semibold text-slate-700">No matching records</p>
-                    <p className="mt-1 text-xs text-slate-500">Generate new insights from Geo-Explorer to populate this ledger.</p>
+                  <td colSpan={isEmployee ? 8 : 7} className="px-5 py-10 text-center text-slate-500">
+                    No parcel records found.
                   </td>
                 </tr>
               )}

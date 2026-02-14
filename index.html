@@ -57,6 +57,7 @@
           radial-gradient(1000px 700px at 120% -10%, #d8e8f7 0%, transparent 60%),
           linear-gradient(170deg, var(--bg-start) 0%, var(--bg-mid) 48%, var(--bg-end) 100%);
         color: #0f172a;
+        transition: background 220ms ease, color 220ms ease;
       }
       #root {
         min-height: 100vh;
@@ -65,6 +66,52 @@
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0.88));
         border: 1px solid var(--panel-border);
         backdrop-filter: blur(6px);
+      }
+      body.theme-dark {
+        --bg-start: #0b1320;
+        --bg-mid: #0c1422;
+        --bg-end: #09121f;
+        --panel-border: #334155;
+        background:
+          radial-gradient(1100px 700px at -10% -20%, rgba(19, 48, 74, 0.65) 0%, transparent 60%),
+          radial-gradient(900px 620px at 120% -10%, rgba(23, 72, 46, 0.5) 0%, transparent 58%),
+          linear-gradient(170deg, #0b1320 0%, #0c1422 52%, #09121f 100%);
+        color: #e2e8f0;
+      }
+      body.theme-dark .panel-surface {
+        background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(12, 19, 34, 0.84));
+        border-color: #334155;
+      }
+      body.theme-dark .text-slate-900 { color: #f8fafc !important; }
+      body.theme-dark .text-slate-700 { color: #cbd5e1 !important; }
+      body.theme-dark .text-slate-600 { color: #94a3b8 !important; }
+      body.theme-dark .text-slate-500 { color: #94a3b8 !important; }
+      body.theme-dark .text-slate-400 { color: #94a3b8 !important; }
+      body.theme-dark .bg-white,
+      body.theme-dark .bg-white\/70,
+      body.theme-dark .bg-white\/80,
+      body.theme-dark .bg-white\/85,
+      body.theme-dark .bg-white\/90,
+      body.theme-dark .bg-slate-50,
+      body.theme-dark .bg-slate-100,
+      body.theme-dark .bg-slate-100\/80 {
+        background-color: rgba(15, 23, 42, 0.78) !important;
+      }
+      body.theme-dark .border-slate-100,
+      body.theme-dark .border-slate-200,
+      body.theme-dark .border-slate-300 {
+        border-color: #334155 !important;
+      }
+      body.theme-dark input,
+      body.theme-dark select,
+      body.theme-dark textarea {
+        background-color: rgba(15, 23, 42, 0.72) !important;
+        border-color: #334155 !important;
+        color: #e2e8f0 !important;
+      }
+      body.theme-dark input::placeholder,
+      body.theme-dark textarea::placeholder {
+        color: #94a3b8 !important;
       }
       /* Custom scrollbar for sidebar */
       ::-webkit-scrollbar {
@@ -79,6 +126,12 @@
       }
       ::-webkit-scrollbar-thumb:hover {
         background: #94a3b8;
+      }
+      body.theme-dark ::-webkit-scrollbar-thumb {
+        background: #475569;
+      }
+      body.theme-dark ::-webkit-scrollbar-thumb:hover {
+        background: #64748b;
       }
       .leaflet-container {
         width: 100%;

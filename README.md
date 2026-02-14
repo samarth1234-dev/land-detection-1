@@ -6,7 +6,8 @@ Land intelligence platform with:
 - NDVI-based parcel analysis (Leaflet + Sentinel via Earth Search + TiTiler)
 - Blockchain-style tamper-evident auth ledger
 - Secure login/signup backend with JWT + PostgreSQL (or in-memory demo mode)
-- Land dispute workflow with map-based parcel selection (2-click rectangle)
+- PID-based land claim workflow (citizen query -> government approval)
+- Polygon parcel selection and overlap flag detection for dispute prevention
 
 ## Local Setup
 
@@ -65,6 +66,11 @@ Supabase gives you managed PostgreSQL. This project backend (Express) still runs
 - `POST /api/auth/login`
 - `GET /api/auth/me`
 - `GET /api/auth/chain/verify`
+- `GET /api/land/parcels` (user own, employee global with `scope`)
+- `GET /api/land/claims` (user own, employee global with `scope`)
+- `POST /api/land/claims` (citizen query submission only)
+- `PATCH /api/land/claims/:id/review` (government employee only)
+- `GET /api/land/summary` (government employee only)
 - `POST /api/agri/insights`
 - `GET /api/agri/insights/history` (authenticated user)
 - `GET /api/disputes/summary` (authenticated user)
@@ -88,5 +94,8 @@ Dispute blockchain notes:
 - map-selected parcel bounds are stored in `selection_bounds`
 
 Role model:
-- `USER` (citizen): sees only own records/disputes/history
-- `EMPLOYEE` (government employee): sees global metrics, cross-user disputes, and governance analytics
+- `USER` (citizen): can submit PID claim query with polygon, cannot directly assign land
+- `EMPLOYEE` (government employee): must verify PID to approve and assign parcel ownership
+- employee signup restrictions:
+  - email must end with `.in` or `gov.in`
+  - employee ID must start with `1947` and contain digits

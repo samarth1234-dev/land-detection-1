@@ -212,6 +212,7 @@ const bootstrapSchema = async () => {
       name TEXT NOT NULL,
       email TEXT NOT NULL UNIQUE,
       role TEXT NOT NULL DEFAULT 'USER',
+      employee_id TEXT NULL,
       wallet_address TEXT NULL,
       password_hash TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL,
@@ -222,6 +223,17 @@ const bootstrapSchema = async () => {
   await query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'USER';
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS employee_id TEXT NULL;
+  `);
+
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS users_employee_id_unique_idx
+    ON users (employee_id)
+    WHERE employee_id IS NOT NULL AND employee_id <> '';
   `);
 
   await query(`
@@ -309,6 +321,62 @@ const bootstrapSchema = async () => {
   await query(`
     ALTER TABLE land_disputes
     ADD COLUMN IF NOT EXISTS selection_bounds JSONB NULL;
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS land_claims (
+      id UUID PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      pid TEXT NOT NULL,
+      claim_note TEXT NOT NULL,
+      polygon JSONB NOT NULL,
+      centroid_lat DOUBLE PRECISION NOT NULL,
+      centroid_lng DOUBLE PRECISION NOT NULL,
+      area_sq_m DOUBLE PRECISION NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PENDING',
+      overlap_flags JSONB NOT NULL DEFAULT '[]'::jsonb,
+      review_note TEXT NULL,
+      verified_pid TEXT NULL,
+      reviewed_by UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      reviewed_at TIMESTAMPTZ NULL,
+      ledger_block_index INTEGER NOT NULL REFERENCES chain_blocks(block_index),
+      ledger_block_hash TEXT NOT NULL
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS land_claims_user_created_idx
+    ON land_claims (user_id, created_at DESC);
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS land_claims_status_idx
+    ON land_claims (status);
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS owned_parcels (
+      id UUID PRIMARY KEY,
+      owner_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      pid TEXT NOT NULL UNIQUE,
+      polygon JSONB NOT NULL,
+      centroid_lat DOUBLE PRECISION NOT NULL,
+      centroid_lng DOUBLE PRECISION NOT NULL,
+      area_sq_m DOUBLE PRECISION NOT NULL,
+      assigned_claim_id UUID NULL REFERENCES land_claims(id) ON DELETE SET NULL,
+      status TEXT NOT NULL DEFAULT 'ACTIVE',
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      ledger_block_index INTEGER NOT NULL REFERENCES chain_blocks(block_index),
+      ledger_block_hash TEXT NOT NULL
+    );
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS owned_parcels_owner_idx
+    ON owned_parcels (owner_user_id, created_at DESC);
   `);
 
   await query(`

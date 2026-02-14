@@ -9,6 +9,7 @@ const initialSignupState = {
   confirmPassword: '',
   walletAddress: '',
   role: 'USER',
+  employeeId: '',
   employeeAccessCode: '',
 };
 
@@ -23,6 +24,12 @@ export const AuthScreen = ({ onAuthenticated }) => {
   const [loginForm, setLoginForm] = useState(initialLoginState);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorText, setErrorText] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState({
+    login: false,
+    signup: false,
+    confirm: false,
+    employeeCode: false,
+  });
 
   const title = useMemo(
     () => (mode === 'login' ? 'Welcome back' : 'Create account'),
@@ -68,12 +75,23 @@ export const AuthScreen = ({ onAuthenticated }) => {
           throw new Error('Passwords do not match.');
         }
 
+        if (signupForm.role === 'EMPLOYEE') {
+          const normalizedEmail = signupForm.email.trim().toLowerCase();
+          if (!(normalizedEmail.endsWith('.in') || normalizedEmail.endsWith('gov.in'))) {
+            throw new Error('Government employee email must end with .in or gov.in');
+          }
+          if (!/^1947\d{4,}$/.test(signupForm.employeeId.trim())) {
+            throw new Error('Employee ID must start with 1947 and contain digits only.');
+          }
+        }
+
         const payload = await signupUser({
           name: signupForm.name.trim(),
           email: signupForm.email.trim(),
           password: signupForm.password,
           walletAddress: signupForm.walletAddress.trim(),
           role: signupForm.role,
+          employeeId: signupForm.employeeId.trim(),
           employeeAccessCode: signupForm.employeeAccessCode.trim(),
         });
 
@@ -204,17 +222,35 @@ export const AuthScreen = ({ onAuthenticated }) => {
               <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">Password</span>
               <div className="relative">
                 <input
-                  type="password"
+                  type={
+                    mode === 'signup'
+                      ? (passwordVisible.signup ? 'text' : 'password')
+                      : (passwordVisible.login ? 'text' : 'password')
+                  }
                   value={mode === 'signup' ? signupForm.password : loginForm.password}
                   onChange={(event) =>
                     mode === 'signup'
                       ? onSignupChange('password', event.target.value)
                       : onLoginChange('password', event.target.value)
                   }
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 pr-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                   placeholder="Minimum 6 characters"
                 />
                 <Icons.Key className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPasswordVisible((prev) => ({
+                      ...prev,
+                      [mode === 'signup' ? 'signup' : 'login']: !prev[mode === 'signup' ? 'signup' : 'login'],
+                    }))
+                  }
+                  className="absolute right-3 top-2.5 text-slate-500 transition hover:text-slate-700"
+                >
+                  {(mode === 'signup' ? passwordVisible.signup : passwordVisible.login)
+                    ? <Icons.EyeOff className="h-5 w-5" />
+                    : <Icons.Eye className="h-5 w-5" />}
+                </button>
               </div>
             </label>
 
@@ -226,13 +262,20 @@ export const AuthScreen = ({ onAuthenticated }) => {
                   </span>
                   <div className="relative">
                     <input
-                      type="password"
+                      type={passwordVisible.confirm ? 'text' : 'password'}
                       value={signupForm.confirmPassword}
                       onChange={(event) => onSignupChange('confirmPassword', event.target.value)}
-                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 pr-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                       placeholder="Re-enter password"
                     />
                     <Icons.Key className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" />
+                    <button
+                      type="button"
+                      onClick={() => setPasswordVisible((prev) => ({ ...prev, confirm: !prev.confirm }))}
+                      className="absolute right-3 top-2.5 text-slate-500 transition hover:text-slate-700"
+                    >
+                      {passwordVisible.confirm ? <Icons.EyeOff className="h-5 w-5" /> : <Icons.Eye className="h-5 w-5" />}
+                    </button>
                   </div>
                 </label>
 
@@ -258,7 +301,14 @@ export const AuthScreen = ({ onAuthenticated }) => {
                   </span>
                   <select
                     value={signupForm.role}
-                    onChange={(event) => onSignupChange('role', event.target.value)}
+                    onChange={(event) => {
+                      const nextRole = event.target.value;
+                      onSignupChange('role', nextRole);
+                      if (nextRole !== 'EMPLOYEE') {
+                        onSignupChange('employeeId', '');
+                        onSignupChange('employeeAccessCode', '');
+                      }
+                    }}
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
                   >
                     <option value="USER">Citizen User</option>
@@ -267,21 +317,46 @@ export const AuthScreen = ({ onAuthenticated }) => {
                 </label>
 
                 {signupForm.role === 'EMPLOYEE' && (
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
-                      Employee Access Code
-                    </span>
-                    <div className="relative">
-                      <input
-                        type="password"
-                        value={signupForm.employeeAccessCode}
-                        onChange={(event) => onSignupChange('employeeAccessCode', event.target.value)}
-                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-                        placeholder="Enter department code"
-                      />
-                      <Icons.Key className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" />
-                    </div>
-                  </label>
+                  <>
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                        Government Employee ID
+                      </span>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={signupForm.employeeId}
+                          onChange={(event) => onSignupChange('employeeId', event.target.value)}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                          placeholder="Must start with 1947"
+                        />
+                        <Icons.User className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" />
+                      </div>
+                    </label>
+
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-semibold uppercase tracking-[0.08em] text-slate-500">
+                        Employee Access Code
+                      </span>
+                      <div className="relative">
+                        <input
+                          type={passwordVisible.employeeCode ? 'text' : 'password'}
+                          value={signupForm.employeeAccessCode}
+                          onChange={(event) => onSignupChange('employeeAccessCode', event.target.value)}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 pl-10 pr-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+                          placeholder="Enter department code"
+                        />
+                        <Icons.Key className="pointer-events-none absolute left-3 top-2.5 h-5 w-5 text-slate-400" />
+                        <button
+                          type="button"
+                          onClick={() => setPasswordVisible((prev) => ({ ...prev, employeeCode: !prev.employeeCode }))}
+                          className="absolute right-3 top-2.5 text-slate-500 transition hover:text-slate-700"
+                        >
+                          {passwordVisible.employeeCode ? <Icons.EyeOff className="h-5 w-5" /> : <Icons.Eye className="h-5 w-5" />}
+                        </button>
+                      </div>
+                    </label>
+                  </>
                 )}
               </>
             )}

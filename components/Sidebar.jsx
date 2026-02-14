@@ -6,17 +6,17 @@ export const Sidebar = ({ currentView, onChangeView, isOpen, setIsOpen, user, on
   const isEmployee = user?.role === 'EMPLOYEE';
   const menuItems = isEmployee
     ? [
-        { id: AppView.DASHBOARD, label: 'Gov Dashboard', icon: Icons.Dashboard, hint: 'Global averages and governance' },
+        { id: AppView.DASHBOARD, label: 'Gov Dashboard', icon: Icons.Dashboard, hint: 'Area allocation and map governance' },
         { id: AppView.EXPLORER, label: 'Geo-Explorer', icon: Icons.Map, hint: 'NDVI and parcel check' },
-        { id: AppView.RECORDS, label: 'Land Registry', icon: Icons.Database, hint: 'All records and history' },
-        { id: AppView.DISPUTES, label: 'Land Disputes', icon: Icons.Gavel, hint: 'Cross-user dispute workflow' },
+        { id: AppView.RECORDS, label: 'Land Registry', icon: Icons.Database, hint: 'All approved parcel ownership' },
+        { id: AppView.DISPUTES, label: 'Land Claims', icon: Icons.Gavel, hint: 'PID query review and approvals' },
         { id: AppView.SETTINGS, label: 'Settings', icon: Icons.Settings, hint: 'Profile and preferences' },
       ]
     : [
-        { id: AppView.DASHBOARD, label: 'My Dashboard', icon: Icons.Dashboard, hint: 'My land intelligence overview' },
+        { id: AppView.DASHBOARD, label: 'My Dashboard', icon: Icons.Dashboard, hint: 'My approved land ownership' },
         { id: AppView.EXPLORER, label: 'Geo-Explorer', icon: Icons.Map, hint: 'NDVI and parcel check' },
-        { id: AppView.RECORDS, label: 'My Records', icon: Icons.Database, hint: 'My immutable records' },
-        { id: AppView.DISPUTES, label: 'My Disputes', icon: Icons.Gavel, hint: 'My case tracking' },
+        { id: AppView.RECORDS, label: 'My Land', icon: Icons.Database, hint: 'My approved PID parcels' },
+        { id: AppView.DISPUTES, label: 'Land Claims', icon: Icons.Gavel, hint: 'Submit and track claim queries' },
         { id: AppView.SETTINGS, label: 'Settings', icon: Icons.Settings, hint: 'Profile and preferences' },
       ];
 

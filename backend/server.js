@@ -10,7 +10,7 @@ import { closeDatabase, getPersistenceMode, initDatabase, query, withTransaction
 
 dotenv.config();
 
-const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
+const PORT = Number(process.env.API_PORT || process.env.PORT || 4000);
 const JWT_SECRET = process.env.JWT_SECRET || 'replace-me-with-a-strong-secret';
 const TOKEN_EXPIRY = process.env.TOKEN_EXPIRY || '7d';
 const CORS_ORIGINS = (process.env.CORS_ORIGIN || 'http://127.0.0.1:3000,http://localhost:3000')
@@ -37,6 +37,8 @@ app.use(
 let databaseReady = false;
 const USER_ROLES = new Set(['USER', 'EMPLOYEE']);
 const EMPLOYEE_SIGNUP_CODE = String(process.env.EMPLOYEE_SIGNUP_CODE || '').trim();
+const EMPLOYEE_ID_REGEX = /^1947\d{4,}$/;
+const CLAIM_STATUSES = new Set(['PENDING', 'FLAGGED', 'APPROVED', 'REJECTED']);
 
 const normalizeRole = (value) => {
   const role = String(value || '').trim().toUpperCase();
@@ -44,6 +46,15 @@ const normalizeRole = (value) => {
 };
 
 const isEmployeeAuth = (auth) => normalizeRole(auth?.role) === 'EMPLOYEE';
+const isValidGovernmentEmail = (email) => {
+  const normalized = String(email || '').trim().toLowerCase();
+  return normalized.endsWith('.in') || normalized.endsWith('gov.in');
+};
+const httpError = (status, message) => {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+};
 
 const hashBlock = (block) =>
   crypto
@@ -79,6 +90,7 @@ const toPublicUser = (user) => ({
   name: user.name,
   email: user.email,
   role: normalizeRole(user.role),
+  employeeId: user.employee_id || null,
   walletAddress: user.wallet_address,
   createdAt: toIso(user.created_at),
   lastLoginAt: toIso(user.last_login_at),
@@ -101,6 +113,7 @@ const createToken = (user) =>
       email: user.email,
       name: user.name,
       role: normalizeRole(user.role),
+      employeeId: user.employee_id || null,
       walletAddress: user.wallet_address || null,
     },
     JWT_SECRET,
@@ -345,6 +358,158 @@ const sanitizeSelectionBounds = (value) => {
   };
 };
 
+const sanitizePolygon = (value) => {
+  if (!Array.isArray(value) || value.length < 3) return null;
+  const points = value
+    .map((point) => toCoordPair(point))
+    .filter(Boolean)
+    .slice(0, 80);
+
+  if (points.length < 3) return null;
+  const deduped = [];
+  for (const point of points) {
+    const prev = deduped[deduped.length - 1];
+    if (!prev || prev[0] !== point[0] || prev[1] !== point[1]) {
+      deduped.push(point);
+    }
+  }
+  if (deduped.length < 3) return null;
+
+  const first = deduped[0];
+  const last = deduped[deduped.length - 1];
+  if (first[0] === last[0] && first[1] === last[1]) {
+    deduped.pop();
+  }
+  return deduped.length >= 3 ? deduped : null;
+};
+
+const polygonToLocalMeters = (polygon) => {
+  const lat0 = polygon.reduce((sum, point) => sum + point[0], 0) / polygon.length;
+  const cosLat = Math.cos((lat0 * Math.PI) / 180);
+  return polygon.map(([lat, lng]) => ({
+    x: lng * 111320 * cosLat,
+    y: lat * 110540,
+  }));
+};
+
+const polygonAreaSqM = (polygon) => {
+  if (!Array.isArray(polygon) || polygon.length < 3) return 0;
+  const local = polygonToLocalMeters(polygon);
+  let area2 = 0;
+  for (let i = 0; i < local.length; i += 1) {
+    const a = local[i];
+    const b = local[(i + 1) % local.length];
+    area2 += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(area2) / 2;
+};
+
+const polygonCentroid = (polygon) => {
+  if (!Array.isArray(polygon) || polygon.length < 3) return null;
+  const local = polygonToLocalMeters(polygon);
+  let area2 = 0;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < local.length; i += 1) {
+    const a = local[i];
+    const b = local[(i + 1) % local.length];
+    const cross = a.x * b.y - b.x * a.y;
+    area2 += cross;
+    cx += (a.x + b.x) * cross;
+    cy += (a.y + b.y) * cross;
+  }
+  if (Math.abs(area2) < 1e-8) {
+    const lat = polygon.reduce((sum, point) => sum + point[0], 0) / polygon.length;
+    const lng = polygon.reduce((sum, point) => sum + point[1], 0) / polygon.length;
+    return [Number(lat.toFixed(6)), Number(lng.toFixed(6))];
+  }
+
+  const factor = 1 / (3 * area2);
+  const centroidX = cx * factor;
+  const centroidY = cy * factor;
+  const lat0 = polygon.reduce((sum, point) => sum + point[0], 0) / polygon.length;
+  const cosLat = Math.cos((lat0 * Math.PI) / 180) || 1e-6;
+  const lng = centroidX / (111320 * cosLat);
+  const lat = centroidY / 110540;
+  return [Number(lat.toFixed(6)), Number(lng.toFixed(6))];
+};
+
+const polygonBounds = (polygon) => {
+  const lats = polygon.map((point) => point[0]);
+  const lngs = polygon.map((point) => point[1]);
+  return {
+    minLat: Math.min(...lats),
+    maxLat: Math.max(...lats),
+    minLng: Math.min(...lngs),
+    maxLng: Math.max(...lngs),
+  };
+};
+
+const boxesOverlap = (a, b) =>
+  !(a.maxLat < b.minLat || a.minLat > b.maxLat || a.maxLng < b.minLng || a.minLng > b.maxLng);
+
+const orientation = (a, b, c) => {
+  const value = (b[1] - a[1]) * (c[0] - b[0]) - (b[0] - a[0]) * (c[1] - b[1]);
+  if (Math.abs(value) < 1e-10) return 0;
+  return value > 0 ? 1 : 2;
+};
+
+const onSegment = (a, b, c) =>
+  Math.min(a[0], c[0]) <= b[0] &&
+  b[0] <= Math.max(a[0], c[0]) &&
+  Math.min(a[1], c[1]) <= b[1] &&
+  b[1] <= Math.max(a[1], c[1]);
+
+const segmentsIntersect = (p1, q1, p2, q2) => {
+  const o1 = orientation(p1, q1, p2);
+  const o2 = orientation(p1, q1, q2);
+  const o3 = orientation(p2, q2, p1);
+  const o4 = orientation(p2, q2, q1);
+
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && onSegment(p1, p2, q1)) return true;
+  if (o2 === 0 && onSegment(p1, q2, q1)) return true;
+  if (o3 === 0 && onSegment(p2, p1, q2)) return true;
+  if (o4 === 0 && onSegment(p2, q1, q2)) return true;
+  return false;
+};
+
+const pointInPolygon = (point, polygon) => {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][1];
+    const yi = polygon[i][0];
+    const xj = polygon[j][1];
+    const yj = polygon[j][0];
+    const intersects =
+      yi > point[0] !== yj > point[0] &&
+      point[1] < ((xj - xi) * (point[0] - yi)) / ((yj - yi) || 1e-12) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+};
+
+const polygonsOverlap = (polygonA, polygonB) => {
+  if (!Array.isArray(polygonA) || !Array.isArray(polygonB) || polygonA.length < 3 || polygonB.length < 3) {
+    return false;
+  }
+  if (!boxesOverlap(polygonBounds(polygonA), polygonBounds(polygonB))) return false;
+
+  for (let i = 0; i < polygonA.length; i += 1) {
+    const a1 = polygonA[i];
+    const a2 = polygonA[(i + 1) % polygonA.length];
+    for (let j = 0; j < polygonB.length; j += 1) {
+      const b1 = polygonB[j];
+      const b2 = polygonB[(j + 1) % polygonB.length];
+      if (segmentsIntersect(a1, a2, b1, b2)) return true;
+    }
+  }
+
+  if (pointInPolygon(polygonA[0], polygonB)) return true;
+  if (pointInPolygon(polygonB[0], polygonA)) return true;
+  return false;
+};
+
 const buildDisputeSnapshot = ({
   parcelRef,
   disputeType,
@@ -418,6 +583,187 @@ const toDisputeRecord = (row) => {
   };
 };
 
+const toOwnedParcelRecord = (row) => ({
+  id: row.id,
+  pid: row.pid,
+  polygon: Array.isArray(row.polygon) ? row.polygon : [],
+  centroid: [Number(row.centroid_lat), Number(row.centroid_lng)],
+  areaSqM: Number(row.area_sq_m || 0),
+  status: row.status || 'ACTIVE',
+  createdAt: toIso(row.created_at),
+  updatedAt: toIso(row.updated_at),
+  owner: row.owner_user_id
+    ? {
+        id: row.owner_user_id,
+        name: row.owner_name || 'Unknown owner',
+        email: row.owner_email || null,
+      }
+    : null,
+  assignedClaimId: row.assigned_claim_id || null,
+  ledgerBlock: {
+    index: row.ledger_block_index,
+    hash: row.ledger_block_hash,
+  },
+});
+
+const toLandClaimRecord = (row) => ({
+  id: row.id,
+  pid: row.pid,
+  claimNote: row.claim_note || '',
+  polygon: Array.isArray(row.polygon) ? row.polygon : [],
+  centroid: [Number(row.centroid_lat), Number(row.centroid_lng)],
+  areaSqM: Number(row.area_sq_m || 0),
+  status: row.status || 'PENDING',
+  overlapFlags: Array.isArray(row.overlap_flags) ? row.overlap_flags : [],
+  reviewNote: row.review_note || null,
+  verifiedPid: row.verified_pid || null,
+  createdAt: toIso(row.created_at),
+  updatedAt: toIso(row.updated_at),
+  reviewedAt: toIso(row.reviewed_at),
+  claimant: row.user_id
+    ? {
+        id: row.user_id,
+        name: row.user_name || 'Unknown user',
+        email: row.user_email || null,
+      }
+    : null,
+  reviewedBy: row.reviewed_by
+    ? {
+        id: row.reviewed_by,
+        name: row.reviewer_name || 'Unknown reviewer',
+        email: row.reviewer_email || null,
+      }
+    : null,
+  ledgerBlock: {
+    index: row.ledger_block_index,
+    hash: row.ledger_block_hash,
+  },
+});
+
+const detectClaimOverlaps = async ({ polygon, pid, requesterUserId }) => {
+  const overlapFlags = [];
+
+  const existingParcelsResult = await query(
+    `
+      SELECT op.id, op.pid, op.owner_user_id, op.polygon, u.name AS owner_name, u.email AS owner_email
+      FROM owned_parcels op
+      LEFT JOIN users u ON u.id = op.owner_user_id
+      WHERE op.status = 'ACTIVE'
+    `
+  );
+
+  for (const parcel of existingParcelsResult.rows) {
+    if (String(parcel.pid || '').trim() === String(pid || '').trim()) {
+      continue;
+    }
+    if (polygonsOverlap(polygon, Array.isArray(parcel.polygon) ? parcel.polygon : [])) {
+      overlapFlags.push({
+        type: 'ACTIVE_PARCEL_OVERLAP',
+        targetId: parcel.id,
+        pid: parcel.pid,
+        ownerUserId: parcel.owner_user_id,
+        ownerName: parcel.owner_name || null,
+        ownerEmail: parcel.owner_email || null,
+      });
+    }
+  }
+
+  const pendingClaimsResult = await query(
+    `
+      SELECT lc.id, lc.pid, lc.user_id, lc.polygon, u.name AS user_name, u.email AS user_email
+      FROM land_claims lc
+      LEFT JOIN users u ON u.id = lc.user_id
+      WHERE lc.status IN ('PENDING', 'FLAGGED')
+        AND lc.user_id <> $1
+    `,
+    [requesterUserId]
+  );
+
+  for (const claim of pendingClaimsResult.rows) {
+    if (String(claim.pid || '').trim() === String(pid || '').trim()) {
+      continue;
+    }
+    if (polygonsOverlap(polygon, Array.isArray(claim.polygon) ? claim.polygon : [])) {
+      overlapFlags.push({
+        type: 'PENDING_CLAIM_OVERLAP',
+        targetId: claim.id,
+        pid: claim.pid,
+        claimantUserId: claim.user_id,
+        claimantName: claim.user_name || null,
+        claimantEmail: claim.user_email || null,
+      });
+    }
+  }
+
+  return overlapFlags;
+};
+
+const loadParcels = async ({ includeAll, userId }) => {
+  const params = [];
+  const where = [];
+  if (!includeAll) {
+    params.push(userId);
+    where.push(`op.owner_user_id = $${params.length}`);
+  }
+  where.push(`op.status = 'ACTIVE'`);
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const result = await query(
+    `
+      SELECT
+        op.*,
+        u.name AS owner_name,
+        u.email AS owner_email
+      FROM owned_parcels op
+      LEFT JOIN users u ON u.id = op.owner_user_id
+      ${whereSql}
+      ORDER BY op.created_at DESC
+      LIMIT 400
+    `,
+    params
+  );
+  return result.rows.map(toOwnedParcelRecord);
+};
+
+const loadClaims = async ({ includeAll, userId, statuses = [] }) => {
+  const params = [];
+  const where = [];
+
+  if (!includeAll) {
+    params.push(userId);
+    where.push(`lc.user_id = $${params.length}`);
+  }
+
+  const normalizedStatuses = Array.isArray(statuses)
+    ? statuses.map((status) => normalizeToken(status)).filter((status) => CLAIM_STATUSES.has(status))
+    : [];
+
+  if (normalizedStatuses.length) {
+    params.push(normalizedStatuses);
+    where.push(`lc.status = ANY($${params.length}::text[])`);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const result = await query(
+    `
+      SELECT
+        lc.*,
+        claimant.name AS user_name,
+        claimant.email AS user_email,
+        reviewer.name AS reviewer_name,
+        reviewer.email AS reviewer_email
+      FROM land_claims lc
+      LEFT JOIN users claimant ON claimant.id = lc.user_id
+      LEFT JOIN users reviewer ON reviewer.id = lc.reviewed_by
+      ${whereSql}
+      ORDER BY lc.updated_at DESC
+      LIMIT 500
+    `,
+    params
+  );
+  return result.rows.map(toLandClaimRecord);
+};
+
 const authMiddleware = (req, res, next) => {
   const header = req.headers.authorization || '';
   const [scheme, token] = header.split(' ');
@@ -432,6 +778,7 @@ const authMiddleware = (req, res, next) => {
     req.auth = {
       ...payload,
       role: normalizeRole(payload?.role),
+      employeeId: payload?.employeeId || null,
     };
     next();
   } catch (_error) {
@@ -553,12 +900,18 @@ app.get('/api/health', async (_req, res) => {
       blockchainIntegrity: false,
       totalBlocks: 0,
       totalDisputes: 0,
+      totalClaims: 0,
+      totalParcels: 0,
     });
     return;
   }
 
   const chain = await getChainBlocks();
-  const disputeCountResult = await query('SELECT COUNT(*)::int AS count FROM land_disputes');
+  const [disputeCountResult, claimCountResult, parcelCountResult] = await Promise.all([
+    query('SELECT COUNT(*)::int AS count FROM land_disputes'),
+    query('SELECT COUNT(*)::int AS count FROM land_claims'),
+    query('SELECT COUNT(*)::int AS count FROM owned_parcels'),
+  ]);
   const integrity = verifyChainIntegrity(chain);
   res.json({
     status: 'ok',
@@ -567,6 +920,8 @@ app.get('/api/health', async (_req, res) => {
     blockchainIntegrity: integrity.valid,
     totalBlocks: chain.length,
     totalDisputes: disputeCountResult.rows[0]?.count || 0,
+    totalClaims: claimCountResult.rows[0]?.count || 0,
+    totalParcels: parcelCountResult.rows[0]?.count || 0,
   });
 });
 
@@ -1224,6 +1579,433 @@ app.get('/api/disputes/:id/ledger/verify', authMiddleware, async (req, res) => {
   }
 });
 
+app.get('/api/land/parcels', authMiddleware, async (req, res) => {
+  try {
+    const scope = String(req.query?.scope || '').trim().toLowerCase();
+    const includeAll = isEmployeeAuth(req.auth) && scope !== 'mine';
+    const items = await loadParcels({ includeAll, userId: req.auth.sub });
+    res.json({
+      scope: includeAll ? 'GLOBAL' : 'USER',
+      totalAreaSqM: items.reduce((sum, item) => sum + Number(item.areaSqM || 0), 0),
+      items,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load parcel registry.', error: error.message });
+  }
+});
+
+app.get('/api/land/claims', authMiddleware, async (req, res) => {
+  try {
+    const scope = String(req.query?.scope || '').trim().toLowerCase();
+    const includeAll = isEmployeeAuth(req.auth) && scope !== 'mine';
+    const statusParam = String(req.query?.status || '').trim();
+    const statuses = statusParam ? statusParam.split(',').map((item) => item.trim()) : [];
+    const items = await loadClaims({ includeAll, userId: req.auth.sub, statuses });
+    res.json({
+      scope: includeAll ? 'GLOBAL' : 'USER',
+      flaggedCount: items.filter((item) => item.status === 'FLAGGED').length,
+      items,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load land claims.', error: error.message });
+  }
+});
+
+app.post('/api/land/claims', authMiddleware, async (req, res) => {
+  try {
+    if (isEmployeeAuth(req.auth)) {
+      res.status(403).json({ message: 'Government employees cannot submit citizen land claims.' });
+      return;
+    }
+
+    const pid = String(req.body?.pid || '').trim();
+    const claimNote = String(req.body?.claimNote || '').trim();
+    const polygon = sanitizePolygon(req.body?.polygon);
+
+    if (!pid || pid.length < 3) {
+      res.status(400).json({ message: 'Valid PID is required.' });
+      return;
+    }
+    if (!claimNote || claimNote.length < 12) {
+      res.status(400).json({ message: 'claimNote must be at least 12 characters.' });
+      return;
+    }
+    if (!polygon) {
+      res.status(400).json({ message: 'polygon is required with at least 3 valid coordinate pairs.' });
+      return;
+    }
+
+    const areaSqM = Number(polygonAreaSqM(polygon).toFixed(3));
+    if (!Number.isFinite(areaSqM) || areaSqM < 20) {
+      res.status(400).json({ message: 'Polygon area is too small. Select a valid land parcel.' });
+      return;
+    }
+    const centroid = polygonCentroid(polygon);
+    if (!centroid) {
+      res.status(400).json({ message: 'Unable to compute polygon centroid.' });
+      return;
+    }
+
+    const overlapFlags = await detectClaimOverlaps({
+      polygon,
+      pid,
+      requesterUserId: req.auth.sub,
+    });
+    const status = overlapFlags.length ? 'FLAGGED' : 'PENDING';
+
+    const payload = await withTransaction(async (client) => {
+      const claimId = crypto.randomUUID();
+      const now = new Date().toISOString();
+
+      const block = await insertChainBlock(client, 'LAND_CLAIM_SUBMITTED', {
+        claimId,
+        userId: req.auth.sub,
+        pid,
+        status,
+        areaSqM,
+        overlapCount: overlapFlags.length,
+      });
+
+      const insertResult = await client.query(
+        `
+          INSERT INTO land_claims (
+            id, user_id, pid, claim_note, polygon,
+            centroid_lat, centroid_lng, area_sq_m,
+            status, overlap_flags, review_note, verified_pid, reviewed_by,
+            created_at, updated_at, reviewed_at,
+            ledger_block_index, ledger_block_hash
+          )
+          VALUES (
+            $1, $2, $3, $4, $5::jsonb,
+            $6, $7, $8,
+            $9, $10::jsonb, NULL, NULL, NULL,
+            $11, $11, NULL,
+            $12, $13
+          )
+          RETURNING *
+        `,
+        [
+          claimId,
+          req.auth.sub,
+          pid,
+          claimNote,
+          JSON.stringify(polygon),
+          centroid[0],
+          centroid[1],
+          areaSqM,
+          status,
+          JSON.stringify(overlapFlags),
+          now,
+          block.index,
+          block.hash,
+        ]
+      );
+
+      const overlapClaimIds = overlapFlags
+        .filter((item) => item.type === 'PENDING_CLAIM_OVERLAP')
+        .map((item) => item.targetId)
+        .filter(Boolean);
+      if (overlapClaimIds.length) {
+        await client.query(
+          `
+            UPDATE land_claims
+            SET status = 'FLAGGED', updated_at = $1
+            WHERE id = ANY($2::uuid[])
+              AND status = 'PENDING'
+          `,
+          [now, overlapClaimIds]
+        );
+      }
+
+      return {
+        item: toLandClaimRecord(insertResult.rows[0]),
+        ledgerBlock: {
+          index: block.index,
+          hash: block.hash,
+          eventType: block.eventType,
+          timestamp: block.timestamp,
+        },
+      };
+    });
+
+    res.status(201).json(payload);
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to submit land claim.', error: error.message });
+  }
+});
+
+app.patch('/api/land/claims/:id/review', authMiddleware, requireEmployee, async (req, res) => {
+  try {
+    const claimId = String(req.params.id || '').trim();
+    const action = normalizeToken(req.body?.action);
+    const verifiedPid = String(req.body?.verifiedPid || '').trim();
+    const reviewNote = String(req.body?.reviewNote || '').trim();
+
+    if (!claimId) {
+      res.status(400).json({ message: 'claim id is required.' });
+      return;
+    }
+    if (!['APPROVE', 'REJECT'].includes(action)) {
+      res.status(400).json({ message: 'action must be APPROVE or REJECT.' });
+      return;
+    }
+
+    const payload = await withTransaction(async (client) => {
+      const currentResult = await client.query(
+        'SELECT * FROM land_claims WHERE id = $1 LIMIT 1 FOR UPDATE',
+        [claimId]
+      );
+      const current = currentResult.rows[0];
+      if (!current) return null;
+      if (['APPROVED', 'REJECTED'].includes(current.status)) {
+        return { alreadyFinal: true, item: toLandClaimRecord(current) };
+      }
+
+      const now = new Date().toISOString();
+      const normalizedPid = String(current.pid || '').trim();
+      const decisionStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+      const finalReviewNote = reviewNote || null;
+
+      if (action === 'APPROVE') {
+        if (!verifiedPid) {
+          throw httpError(400, 'verifiedPid is required for approval.');
+        }
+        if (verifiedPid !== normalizedPid) {
+          throw httpError(400, 'PID mismatch. Approval requires exact PID match.');
+        }
+
+        const pidConflict = await client.query(
+          `
+            SELECT id, owner_user_id
+            FROM owned_parcels
+            WHERE pid = $1
+              AND status = 'ACTIVE'
+            LIMIT 1
+          `,
+          [normalizedPid]
+        );
+        if (pidConflict.rows[0]) {
+          throw httpError(409, 'PID already assigned to another active parcel.');
+        }
+
+        const activeParcels = await client.query(
+          `
+            SELECT id, pid, owner_user_id, polygon
+            FROM owned_parcels
+            WHERE status = 'ACTIVE'
+          `
+        );
+        const conflict = activeParcels.rows.find((parcel) =>
+          polygonsOverlap(current.polygon, Array.isArray(parcel.polygon) ? parcel.polygon : [])
+        );
+        if (conflict) {
+          throw httpError(409, 'Claim area overlaps an active registered parcel. Resolve dispute before approval.');
+        }
+      }
+
+      const reviewBlock = await insertChainBlock(client, 'LAND_CLAIM_REVIEWED', {
+        claimId,
+        action,
+        reviewerUserId: req.auth.sub,
+        claimantUserId: current.user_id,
+        pid: normalizedPid,
+      });
+
+      const updatedClaimResult = await client.query(
+        `
+          UPDATE land_claims
+          SET
+            status = $1,
+            review_note = $2,
+            verified_pid = $3,
+            reviewed_by = $4,
+            reviewed_at = $5,
+            updated_at = $5,
+            ledger_block_index = $6,
+            ledger_block_hash = $7
+          WHERE id = $8
+          RETURNING *
+        `,
+        [
+          decisionStatus,
+          finalReviewNote,
+          action === 'APPROVE' ? verifiedPid : null,
+          req.auth.sub,
+          now,
+          reviewBlock.index,
+          reviewBlock.hash,
+          claimId,
+        ]
+      );
+
+      let parcel = null;
+      if (action === 'APPROVE') {
+        const parcelBlock = await insertChainBlock(client, 'LAND_PARCEL_ASSIGNED', {
+          claimId,
+          pid: normalizedPid,
+          ownerUserId: current.user_id,
+          reviewerUserId: req.auth.sub,
+          areaSqM: Number(current.area_sq_m || 0),
+        });
+
+        const parcelResult = await client.query(
+          `
+            INSERT INTO owned_parcels (
+              id, owner_user_id, pid, polygon,
+              centroid_lat, centroid_lng, area_sq_m,
+              assigned_claim_id, status,
+              created_at, updated_at,
+              ledger_block_index, ledger_block_hash
+            )
+            VALUES (
+              $1, $2, $3, $4::jsonb,
+              $5, $6, $7,
+              $8, 'ACTIVE',
+              $9, $9,
+              $10, $11
+            )
+            RETURNING *
+          `,
+          [
+            crypto.randomUUID(),
+            current.user_id,
+            normalizedPid,
+            JSON.stringify(current.polygon),
+            Number(current.centroid_lat),
+            Number(current.centroid_lng),
+            Number(current.area_sq_m || 0),
+            claimId,
+            now,
+            parcelBlock.index,
+            parcelBlock.hash,
+          ]
+        );
+        parcel = toOwnedParcelRecord(parcelResult.rows[0]);
+      }
+
+      return {
+        alreadyFinal: false,
+        item: toLandClaimRecord(updatedClaimResult.rows[0]),
+        parcel,
+      };
+    });
+
+    if (!payload) {
+      res.status(404).json({ message: 'Claim not found.' });
+      return;
+    }
+    if (payload.alreadyFinal) {
+      res.status(409).json({ message: 'Claim already reviewed.', item: payload.item });
+      return;
+    }
+    res.json(payload);
+  } catch (error) {
+    res.status(error.status || 500).json({ message: error.message || 'Failed to review land claim.' });
+  }
+});
+
+app.get('/api/land/summary', authMiddleware, requireEmployee, async (_req, res) => {
+  try {
+    const [parcelSummaryResult, claimSummaryResult, ownershipRows, claimsRows] = await Promise.all([
+      query(
+        `
+          SELECT
+            COUNT(*)::int AS total_parcels,
+            COALESCE(SUM(area_sq_m), 0)::double precision AS total_area_sq_m
+          FROM owned_parcels
+          WHERE status = 'ACTIVE'
+        `
+      ),
+      query(
+        `
+          SELECT
+            COUNT(*)::int AS total_claims,
+            COUNT(*) FILTER (WHERE status = 'PENDING')::int AS pending_claims,
+            COUNT(*) FILTER (WHERE status = 'FLAGGED')::int AS flagged_claims,
+            COUNT(*) FILTER (WHERE status = 'APPROVED')::int AS approved_claims,
+            COUNT(*) FILTER (WHERE status = 'REJECTED')::int AS rejected_claims
+          FROM land_claims
+        `
+      ),
+      query(
+        `
+          SELECT
+            op.owner_user_id,
+            u.name AS owner_name,
+            u.email AS owner_email,
+            COUNT(*)::int AS parcel_count,
+            COALESCE(SUM(op.area_sq_m), 0)::double precision AS area_sq_m
+          FROM owned_parcels op
+          JOIN users u ON u.id = op.owner_user_id
+          WHERE op.status = 'ACTIVE'
+          GROUP BY op.owner_user_id, u.name, u.email
+          ORDER BY area_sq_m DESC
+          LIMIT 200
+        `
+      ),
+      query(
+        `
+          SELECT
+            lc.id,
+            lc.pid,
+            lc.status,
+            lc.overlap_flags,
+            lc.user_id,
+            u.name AS user_name,
+            u.email AS user_email,
+            lc.updated_at
+          FROM land_claims lc
+          LEFT JOIN users u ON u.id = lc.user_id
+          WHERE lc.status IN ('PENDING', 'FLAGGED')
+          ORDER BY lc.updated_at DESC
+          LIMIT 200
+        `
+      ),
+    ]);
+
+    const parcelSummary = parcelSummaryResult.rows[0] || {};
+    const claimSummary = claimSummaryResult.rows[0] || {};
+    const pendingClaims = claimsRows.rows.map((row) => ({
+      id: row.id,
+      pid: row.pid,
+      status: row.status,
+      overlapFlags: Array.isArray(row.overlap_flags) ? row.overlap_flags : [],
+      claimant: {
+        id: row.user_id,
+        name: row.user_name || 'Unknown user',
+        email: row.user_email || null,
+      },
+      updatedAt: toIso(row.updated_at),
+    }));
+
+    res.json({
+      parcels: {
+        total: Number(parcelSummary.total_parcels || 0),
+        totalAreaSqM: Number(parcelSummary.total_area_sq_m || 0),
+      },
+      claims: {
+        total: Number(claimSummary.total_claims || 0),
+        pending: Number(claimSummary.pending_claims || 0),
+        flagged: Number(claimSummary.flagged_claims || 0),
+        approved: Number(claimSummary.approved_claims || 0),
+        rejected: Number(claimSummary.rejected_claims || 0),
+      },
+      ownership: ownershipRows.rows.map((row) => ({
+        owner: {
+          id: row.owner_user_id,
+          name: row.owner_name || 'Unknown owner',
+          email: row.owner_email || null,
+        },
+        parcelCount: Number(row.parcel_count || 0),
+        areaSqM: Number(row.area_sq_m || 0),
+      })),
+      pendingClaims,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to load land governance summary.', error: error.message });
+  }
+});
+
 app.get('/api/analytics/overview', authMiddleware, requireEmployee, async (_req, res) => {
   try {
     const [usersResult, insightsResult, disputesResult, cropsResult, vigorResult] = await Promise.all([
@@ -1327,7 +2109,9 @@ app.post('/api/auth/signup', async (req, res) => {
     const walletAddress = String(req.body?.walletAddress || '').trim();
     const requestedRole = normalizeRole(req.body?.role);
     const employeeAccessCode = String(req.body?.employeeAccessCode || '').trim();
+    const employeeIdRaw = String(req.body?.employeeId || '').trim();
     const role = requestedRole === 'EMPLOYEE' ? 'EMPLOYEE' : 'USER';
+    const employeeId = role === 'EMPLOYEE' ? employeeIdRaw : null;
 
     if (!name || !email || !password) {
       res.status(400).json({ message: 'Name, email, and password are required.' });
@@ -1344,10 +2128,31 @@ app.post('/api/auth/signup', async (req, res) => {
       return;
     }
 
+    if (role === 'EMPLOYEE' && !isValidGovernmentEmail(email)) {
+      res.status(400).json({ message: 'Government employee email must end with .in or gov.in.' });
+      return;
+    }
+
+    if (role === 'EMPLOYEE' && !EMPLOYEE_ID_REGEX.test(employeeId || '')) {
+      res.status(400).json({ message: 'Government employee ID must start with 1947 and contain digits only.' });
+      return;
+    }
+
     const existingResult = await query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email]);
     if (existingResult.rows.length > 0) {
       res.status(409).json({ message: 'Email already registered.' });
       return;
+    }
+
+    if (employeeId) {
+      const existingEmployeeId = await query(
+        'SELECT id FROM users WHERE employee_id = $1 LIMIT 1',
+        [employeeId]
+      );
+      if (existingEmployeeId.rows.length > 0) {
+        res.status(409).json({ message: 'Employee ID already registered.' });
+        return;
+      }
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
@@ -1356,6 +2161,7 @@ app.post('/api/auth/signup', async (req, res) => {
       name,
       email,
       role,
+      employeeId,
       walletAddress: walletAddress || null,
       passwordHash,
       createdAt: new Date().toISOString(),
@@ -1365,14 +2171,15 @@ app.post('/api/auth/signup', async (req, res) => {
     await query(
       `
         INSERT INTO users
-        (id, name, email, role, wallet_address, password_hash, created_at, last_login_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (id, name, email, role, employee_id, wallet_address, password_hash, created_at, last_login_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `,
       [
         newUser.id,
         newUser.name,
         newUser.email,
         newUser.role,
+        newUser.employeeId,
         newUser.walletAddress,
         newUser.passwordHash,
         newUser.createdAt,
@@ -1386,6 +2193,7 @@ app.post('/api/auth/signup', async (req, res) => {
       userId: newUser.id,
       email: newUser.email,
       role: newUser.role,
+      employeeId: newUser.employeeId,
       walletAddress: newUser.walletAddress,
       name: newUser.name,
     });
@@ -1395,6 +2203,7 @@ app.post('/api/auth/signup', async (req, res) => {
       email: newUser.email,
       name: newUser.name,
       role: newUser.role,
+      employee_id: newUser.employeeId,
       wallet_address: newUser.walletAddress,
     });
 
@@ -1406,6 +2215,7 @@ app.post('/api/auth/signup', async (req, res) => {
         name: newUser.name,
         email: newUser.email,
         role: newUser.role,
+        employee_id: newUser.employeeId,
         wallet_address: newUser.walletAddress,
         created_at: newUser.createdAt,
         last_login_at: newUser.lastLoginAt,

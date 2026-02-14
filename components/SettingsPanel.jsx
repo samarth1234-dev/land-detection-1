@@ -21,6 +21,7 @@ const defaultProfileForm = {
   name: '',
   email: '',
   role: 'USER',
+  employeeId: '',
   walletAddress: '',
   organization: '',
   roleTitle: '',
@@ -44,7 +45,7 @@ const defaultPasswordForm = {
   confirmPassword: '',
 };
 
-export const SettingsPanel = ({ onUserUpdate }) => {
+export const SettingsPanel = ({ onUserUpdate, themeMode = 'light', onThemeModeChange }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [profileForm, setProfileForm] = useState(defaultProfileForm);
   const [prefForm, setPrefForm] = useState(defaultPrefForm);
@@ -55,6 +56,11 @@ export const SettingsPanel = ({ onUserUpdate }) => {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [lastLedger, setLastLedger] = useState(null);
+  const [showPasswords, setShowPasswords] = useState({
+    current: false,
+    next: false,
+    confirm: false,
+  });
 
   useEffect(() => {
     let active = true;
@@ -71,6 +77,7 @@ export const SettingsPanel = ({ onUserUpdate }) => {
           name: user.name || '',
           email: user.email || '',
           role: user.role || 'USER',
+          employeeId: user.employeeId || '',
           walletAddress: user.walletAddress || '',
           organization: settings.organization || '',
           roleTitle: settings.roleTitle || '',
@@ -307,6 +314,17 @@ export const SettingsPanel = ({ onUserUpdate }) => {
               </div>
             </div>
 
+            {profileForm.role === 'EMPLOYEE' && (
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.06em] text-slate-500">Government Employee ID</label>
+                <input
+                  value={profileForm.employeeId || 'NA'}
+                  disabled
+                  className="w-full cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-500"
+                />
+              </div>
+            )}
+
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.06em] text-slate-500">Preferred Language</label>
@@ -436,6 +454,25 @@ export const SettingsPanel = ({ onUserUpdate }) => {
               </label>
             </div>
 
+            <div className="rounded-lg border border-slate-200 bg-white/80 p-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.06em] text-slate-500">Theme</p>
+              <div className="mt-2 flex items-center justify-between">
+                <p className="text-sm text-slate-700">Dark mode</p>
+                <button
+                  type="button"
+                  onClick={() => onThemeModeChange?.(themeMode === 'dark' ? 'light' : 'dark')}
+                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                    themeMode === 'dark'
+                      ? 'border-slate-700 bg-slate-900 text-slate-100'
+                      : 'border-slate-300 bg-white text-slate-700'
+                  }`}
+                >
+                  {themeMode === 'dark' ? <Icons.Moon className="h-3.5 w-3.5" /> : <Icons.Sun className="h-3.5 w-3.5" />}
+                  {themeMode === 'dark' ? 'Dark' : 'Light'}
+                </button>
+              </div>
+            </div>
+
             <button
               type="submit"
               disabled={isSavingPrefs}
@@ -451,27 +488,54 @@ export const SettingsPanel = ({ onUserUpdate }) => {
       <section className="panel-surface rounded-2xl p-5">
         <h3 className="font-display text-lg font-bold text-slate-900">Security</h3>
         <form className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-3" onSubmit={handleChangePassword}>
-          <input
-            type="password"
-            value={passwordForm.currentPassword}
-            onChange={(event) => handlePasswordChange('currentPassword', event.target.value)}
-            placeholder="Current password"
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-          />
-          <input
-            type="password"
-            value={passwordForm.nextPassword}
-            onChange={(event) => handlePasswordChange('nextPassword', event.target.value)}
-            placeholder="New password"
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-          />
-          <input
-            type="password"
-            value={passwordForm.confirmPassword}
-            onChange={(event) => handlePasswordChange('confirmPassword', event.target.value)}
-            placeholder="Confirm new password"
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
-          />
+          <div className="relative">
+            <input
+              type={showPasswords.current ? 'text' : 'password'}
+              value={passwordForm.currentPassword}
+              onChange={(event) => handlePasswordChange('currentPassword', event.target.value)}
+              placeholder="Current password"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 pr-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPasswords((prev) => ({ ...prev, current: !prev.current }))}
+              className="absolute right-3 top-2.5 text-slate-500 transition hover:text-slate-700"
+            >
+              {showPasswords.current ? <Icons.EyeOff className="h-4 w-4" /> : <Icons.Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          <div className="relative">
+            <input
+              type={showPasswords.next ? 'text' : 'password'}
+              value={passwordForm.nextPassword}
+              onChange={(event) => handlePasswordChange('nextPassword', event.target.value)}
+              placeholder="New password"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 pr-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPasswords((prev) => ({ ...prev, next: !prev.next }))}
+              className="absolute right-3 top-2.5 text-slate-500 transition hover:text-slate-700"
+            >
+              {showPasswords.next ? <Icons.EyeOff className="h-4 w-4" /> : <Icons.Eye className="h-4 w-4" />}
+            </button>
+          </div>
+          <div className="relative">
+            <input
+              type={showPasswords.confirm ? 'text' : 'password'}
+              value={passwordForm.confirmPassword}
+              onChange={(event) => handlePasswordChange('confirmPassword', event.target.value)}
+              placeholder="Confirm new password"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 pr-10 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPasswords((prev) => ({ ...prev, confirm: !prev.confirm }))}
+              className="absolute right-3 top-2.5 text-slate-500 transition hover:text-slate-700"
+            >
+              {showPasswords.confirm ? <Icons.EyeOff className="h-4 w-4" /> : <Icons.Eye className="h-4 w-4" />}
+            </button>
+          </div>
           <button
             type="submit"
             disabled={isSavingPassword}

@@ -41,7 +41,7 @@ export const fetchDisputes = async (status = '') => {
   return parseResponse(response);
 };
 
-export const createDispute = async ({ parcelRef, disputeType, description, coords, priority, evidenceUrls }) => {
+export const createDispute = async ({ parcelRef, disputeType, description, coords, selectionBounds, priority, evidenceUrls }) => {
   const response = await fetch('/api/disputes', {
     method: 'POST',
     headers: authHeaders(),
@@ -50,6 +50,7 @@ export const createDispute = async ({ parcelRef, disputeType, description, coord
       disputeType,
       description,
       coords,
+      selectionBounds,
       priority,
       evidenceUrls,
     }),

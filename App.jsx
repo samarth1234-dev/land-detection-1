@@ -3,17 +3,19 @@ import { Sidebar } from './components/Sidebar.jsx';
 import { Dashboard } from './components/Dashboard.jsx';
 import { MapExplorer } from './components/MapExplorer.jsx';
 import { LandRecords } from './components/LandRecords.jsx';
-import { LandDisputes } from './components/LandDisputes.jsx';
+import { LandClaims } from './components/LandClaims.jsx';
 import { SettingsPanel } from './components/SettingsPanel.jsx';
 import { AppView } from './constants.js';
 import { Icons } from './components/Icons.jsx';
 import { AuthScreen } from './components/AuthScreen.jsx';
 import { clearSession, fetchCurrentUser, loadSession, saveSession, verifyAuthChain } from './services/authService.js';
 
+const THEME_STORAGE_KEY = 'root_theme_mode_v1';
+
 const viewMeta = {
   [AppView.DASHBOARD]: {
-    title: 'Executive Dashboard',
-    subtitle: 'Portfolio health, risk markers, and verification throughput.'
+    title: 'Role Dashboard',
+    subtitle: 'Citizen ownership or government parcel governance view.'
   },
   [AppView.EXPLORER]: {
     title: 'Geo-Explorer',
@@ -21,11 +23,11 @@ const viewMeta = {
   },
   [AppView.RECORDS]: {
     title: 'Land Registry',
-    subtitle: 'Blockchain-backed ownership and verification history.'
+    subtitle: 'PID-approved parcels and immutable ownership assignment.'
   },
   [AppView.DISPUTES]: {
-    title: 'Land Disputes',
-    subtitle: 'Case filing, review workflow, and tamper-evident updates.'
+    title: 'Land Claims',
+    subtitle: 'Citizen claim query submission and government PID verification.'
   },
   [AppView.SETTINGS]: {
     title: 'Settings',
@@ -37,8 +39,17 @@ function App() {
   const [currentView, setCurrentView] = useState(AppView.DASHBOARD);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [session, setSession] = useState(() => loadSession());
+  const [themeMode, setThemeMode] = useState(() => {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    return stored === 'dark' ? 'dark' : 'light';
+  });
   const [isAuthChecking, setIsAuthChecking] = useState(true);
   const [chainInfo, setChainInfo] = useState({ valid: null, totalBlocks: 0 });
+
+  useEffect(() => {
+    localStorage.setItem(THEME_STORAGE_KEY, themeMode);
+    document.body.classList.toggle('theme-dark', themeMode === 'dark');
+  }, [themeMode]);
 
   useEffect(() => {
     const bootstrapAuth = async () => {
@@ -121,11 +132,17 @@ function App() {
       case AppView.EXPLORER:
         return <MapExplorer />;
       case AppView.RECORDS:
-        return <LandRecords />;
+        return <LandRecords role={session?.user?.role || 'USER'} />;
       case AppView.DISPUTES:
-        return <LandDisputes />;
+        return <LandClaims role={session?.user?.role || 'USER'} />;
       case AppView.SETTINGS:
-        return <SettingsPanel onUserUpdate={handleSessionUserUpdate} />;
+        return (
+          <SettingsPanel
+            onUserUpdate={handleSessionUserUpdate}
+            themeMode={themeMode}
+            onThemeModeChange={setThemeMode}
+          />
+        );
       default:
         return <Dashboard />;
     }
@@ -176,6 +193,15 @@ function App() {
             </div>
 
             <div className="hidden items-center gap-2 md:flex">
+              <button
+                type="button"
+                onClick={() => setThemeMode((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-slate-100"
+                title="Toggle theme"
+              >
+                {themeMode === 'dark' ? <Icons.Sun className="h-3.5 w-3.5" /> : <Icons.Moon className="h-3.5 w-3.5" />}
+                {themeMode === 'dark' ? 'Light' : 'Dark'}
+              </button>
               <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600">
                 <Icons.User className="h-3.5 w-3.5" />
                 {session.user.name}

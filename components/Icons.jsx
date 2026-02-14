@@ -30,7 +30,11 @@ import {
   LogIn,
   UserPlus,
   LogOut,
-  Gavel
+  Gavel,
+  Eye,
+  EyeOff,
+  Moon,
+  Sun
 } from 'lucide-react';
 
 export const Icons = {
@@ -64,5 +68,9 @@ export const Icons = {
   LogIn: LogIn,
   UserPlus: UserPlus,
   LogOut: LogOut,
-  Gavel: Gavel
+  Gavel: Gavel,
+  Eye: Eye,
+  EyeOff: EyeOff,
+  Moon: Moon,
+  Sun: Sun
 };
