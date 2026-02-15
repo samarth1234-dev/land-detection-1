@@ -632,23 +632,6 @@ export const MapExplorer = () => {
             </div>
           )}
 
-          <button
-            onClick={handleAnalyze}
-            disabled={isProcessing || !computedStats}
-            className="w-full py-3 bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 text-white rounded-xl shadow-lg font-semibold flex items-center justify-center transition-all disabled:opacity-70 disabled:grayscale"
-          >
-            {isProcessing ? (
-              <>
-                <Icons.Spinner className="w-5 h-5 mr-2 animate-spin" />
-                Processing NDVI...
-              </>
-            ) : (
-              <>
-                <Icons.AI className="w-5 h-5 mr-2" />
-                AI Verification
-              </>
-            )}
-          </button>
         </div>
 
         {result && (
